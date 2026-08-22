@@ -16,7 +16,7 @@ Cloudflare Worker API 部署脚本（Python，无 Node 依赖）
 import sys, os, json, time, urllib.request, urllib.error, ssl
 
 API = 'https://api.cloudflare.com/client/v4'
-WORKER_FILE = r'C:\Users\Administrator\Desktop\worker.js'
+WORKER_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'worker.js')
 BACKUP_DIR = r'C:\Users\Administrator\Desktop'
 DOMAIN_HINT = 'zzzj.de5.net'
 
