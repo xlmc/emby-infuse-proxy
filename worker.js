@@ -877,6 +877,8 @@ async function fetchBgmRating(name, year) {
     const rt = it.rating && typeof it.rating == "object" ? it.rating : null;
     const score = Number(rt && rt.score) || 0, total = Number(rt && rt.total) || 0;
     if (!(score > 0) || total < 50) continue;
+    const rn = String(it.name_cn || it.name || ""), nq = nm.slice(0, 4);
+    if (!rn || !(rn.includes(nq) || nm.includes(rn.slice(0, 4)))) continue;
     const ry = Number(String(it.date || "").slice(0, 4)) || 0;
     if (year ? ry && Math.abs(ry - Number(year)) <= 1 : ry) return score;
   }
@@ -946,7 +948,7 @@ async function enrichInfuseListArtwork(n, e, r, t = {}) {
     const itType = String(it.Type || "").trim().toLowerCase();
     if (itType === "episode") {
       if (!isResume || Number(it.RunTimeTicks) > 0) continue;
-      targets.push({ idx: i, id: String(it.Id || "").trim(), name: String(it.Name || "").slice(0, 60), year: null });
+      targets.push({ idx: i, id: String(it.Id || "").trim(), name: String(it.Name || "").slice(0, 60), year: null, noRating: !0 });
       continue;
     }
     if (itType !== "series" && itType !== "movie") continue;
@@ -984,10 +986,10 @@ async function enrichInfuseListArtwork(n, e, r, t = {}) {
           const d = await fetchDetailRaw(o, tg.id, userId, e, t);
           meta = d ? extractListMeta(d, tg.id) : null;
           if (meta) {
-            meta.communityRating == null && !meta.ratingTried && (meta.communityRating = await fetchBgmRating(tg.name, tg.year), meta.ratingTried = !0);
+            !tg.noRating && meta.communityRating == null && !meta.ratingTried && (meta.communityRating = await fetchBgmRating(tg.name, tg.year), meta.ratingTried = !0);
             km && await Cn(s, km, meta);
           }
-        } else if (meta.communityRating == null && !meta.ratingTried) {
+        } else if (!tg.noRating && meta.communityRating == null && !meta.ratingTried) {
           meta.communityRating = await fetchBgmRating(tg.name, tg.year);
           meta.ratingTried = !0;
           km && await Cn(s, km, meta);
@@ -1021,7 +1023,7 @@ async function enrichInfuseListArtwork(n, e, r, t = {}) {
       if (!it.RunTimeTicks && meta.runTimeTicks) adds.RunTimeTicks = meta.runTimeTicks;
       if (meta.premiereDate && !it.PremiereDate) adds.PremiereDate = meta.premiereDate;
       if (meta.officialRating && !it.OfficialRating) adds.OfficialRating = meta.officialRating;
-      if (meta.communityRating != null && !(Number(it.CommunityRating) > 0)) adds.CommunityRating = meta.communityRating;
+      if (!x.noRating && meta.communityRating != null && !(Number(it.CommunityRating) > 0)) adds.CommunityRating = meta.communityRating;
       if (meta.mediaSource && !(Array.isArray(it.MediaSources) && it.MediaSources.length)) adds.MediaSources = [meta.mediaSource];
     }
     const hasAdds = Object.keys(adds).length > 0;
