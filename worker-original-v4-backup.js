@@ -489,7 +489,7 @@ function Gt(n = null) {
 async function Ol(n, e, r = {}) {
   const t = n?.request;
   if (!Gt(t) || !(e instanceof URL)) return null;
-  const a = String(n?.proxyPath || n?.requestUrl?.pathname || ""), o = /^\/(?:emby\/)?Videos\/((?:ve|vl)-\d+)\/stream\/?$/i.exec(a);
+  const a = String(n?.proxyPath || n?.requestUrl?.pathname || ""), o = /^\/(?:emby\/)?Videos\/(ve-\d+)\/stream\/?$/i.exec(a);
   if (!o) return null;
   const s = ti(e, `/Items/${encodeURIComponent(o[1])}/PlaybackInfo`);
   if (!s) return null;
@@ -750,8 +750,7 @@ function Wl(n = {}) {
 }
 function es(n, e, r) {
   const t = String(n?.hostname || "").toLowerCase();
-  const idOk = String(r || "") === "meta2" ? /^v[le]-\d+$/i : /^vl-\d+$/i;
-  return !t || !idOk.test(String(e || "")) || !/^(artwork|seasons|meta2)$/.test(String(r || "")) ? null : new Request(`https://infuse-series-context-cache-v2.invalid/${encodeURIComponent(t)}/${encodeURIComponent(e)}/${r}`);
+  return !t || !/^vl-\d+$/i.test(String(e || "")) || !/^(artwork|seasons)$/.test(String(r || "")) ? null : new Request(`https://infuse-series-context-cache.invalid/${encodeURIComponent(t)}/${encodeURIComponent(e)}/${r}`);
 }
 async function ts(n, e) {
   if (!n || !e) return null;
@@ -859,107 +858,23 @@ async function Vl(n, e, r, t, a = {}) {
     return null;
   }
 }
-async function fetchBgmRating(name, year) {
-  const nm = String(name || "").trim();
-  if (!nm) return null;
-  let rows = null;
-  try {
-    const r = await fetch("https://api.bgm.tv/v0/search/subjects", {
-      method: "POST",
-      headers: { "User-Agent": "zzzj-emby-proxy/1.0 (rating)", "Accept": "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify({ keyword: nm.slice(0, 60), filter: { type: [2, 6] } })
-    });
-    if (r.ok) rows = (await r.json().catch(() => null))?.data || null;
-  } catch {}
-  if (!Array.isArray(rows)) return null;
-  for (const it of rows) {
-    if (!it || typeof it != "object") continue;
-    const rt = it.rating && typeof it.rating == "object" ? it.rating : null;
-    const score = Number(rt && rt.score) || 0, total = Number(rt && rt.total) || 0;
-    if (!(score > 0) || total < 50) continue;
-    const ry = Number(String(it.date || "").slice(0, 4)) || 0;
-    if (year ? ry && Math.abs(ry - Number(year)) <= 1 : ry) return score;
-  }
-  return null;
-}
-async function fetchDetailRaw(n, e, r, t, a = {}) {
-  const o = ti(n, "/Users/" + encodeURIComponent(r || "") + "/Items/" + encodeURIComponent(e));
-  if (!o) return null;
-  const s = a?.newHeaders instanceof Headers ? new Headers(a.newHeaders) : new Headers(t?.request?.headers || {});
-  s.delete("Range"); s.delete("Content-Length"); s.set("Accept", "application/json");
-  try {
-    const i = await (a.fetch ?? fetch)(o.toString(), { headers: s });
-    if (!i.ok) return null;
-    return await i.json().catch(() => null);
-  } catch {
-    return null;
-  }
-}
-function extractListMeta(n, e = "") {
-  if (!n || typeof n != "object" || Array.isArray(n)) return null;
-  const people0 = Array.isArray(n.People) ? n.People.filter((p) => p && typeof p == "object" && !Array.isArray(p)).slice(0, 30).map((p) => {
-    const tag = Mr(String(p.PrimaryImageTag || ""));
-    const o = { Id: String(p.Id || ""), Name: String(p.Name || ""), Type: String(p.Type || "Actor") };
-    return p.Role && (o.Role = String(p.Role)), tag && (o.PrimaryImageTag = tag), o;
-  }) : [];
-  const people = people0.length > 1 ? $l(people0).people : people0;
-  const ms = Array.isArray(n.MediaSources) && n.MediaSources[0] && typeof n.MediaSources[0] == "object" ? n.MediaSources[0] : null;
-  const runTimeTicks = Number(n.RunTimeTicks) || Number(ms && ms.RunTimeTicks) || 0;
-  let mediaSource = null;
-  if (ms) {
-    try {
-      mediaSource = JSON.parse(JSON.stringify(ms));
-      if (mediaSource && typeof mediaSource == "object" && !Array.isArray(mediaSource)) {
-        for (const key of ["DirectStreamUrl", "TranscodingUrl", "TranscodingSubUrl", "EncodeUrl", "OpenToken", "DirectPlayUrl"])
-          delete mediaSource[key];
-        if (Array.isArray(mediaSource.MediaStreams)) {
-          mediaSource.MediaStreams = mediaSource.MediaStreams.filter((x) => x && typeof x == "object").slice(0, 12);
-          if (!mediaSource.MediaStreams.length) delete mediaSource.MediaStreams;
-        } else delete mediaSource.MediaStreams;
-      } else mediaSource = null;
-    } catch {
-      mediaSource = null;
-    }
-  }
-  return {
-    art: ei(n, e),
-    overview: String(n.Overview || "").replace(/^[ \t\r]*v[a-z]-\d+\s*#\s*/i, "").replace(/^[ \t\r]*感谢\s*emos\s*提供储存[ \t\r]*/i, "").replace(/^[\r\n]+/, "").trim() || null,
-    people: people.length ? people : [],
-    runTimeTicks: runTimeTicks > 0 ? runTimeTicks : null,
-    premiereDate: n.PremiereDate || null,
-    officialRating: n.OfficialRating || null,
-    communityRating: Number.isFinite(Number(n.CommunityRating)) && Number(n.CommunityRating) > 0 ? Number(n.CommunityRating) : null,
-    ratingTried: !1,
-    mediaSource
-  };
-}
 async function enrichInfuseListArtwork(n, e, r, t = {}) {
   const items = Array.isArray(n) ? n : Array.isArray(n?.Items) ? n.Items : null;
   if (!items || !items.length) return { payload: n, changed: !1 };
   const o = r?.activeTargetBase;
   if (!o) return { payload: n, changed: !1 };
-  const isResume = /\/items\/resume\/?$/i.test(String(e?.proxyPath || e?.requestUrl?.pathname || ""));
   const targets = [];
   for (let i = 0; i < items.length; i++) {
     const it = items[i];
     if (!it || typeof it != "object" || Array.isArray(it)) continue;
-    const itType = String(it.Type || "").trim().toLowerCase();
-    if (itType === "episode") {
-      if (!isResume || Number(it.RunTimeTicks) > 0) continue;
-      targets.push({ idx: i, id: String(it.Id || "").trim(), name: String(it.Name || "").slice(0, 60), year: null });
-      continue;
-    }
-    if (itType !== "series" && itType !== "movie") continue;
+    if (String(it.Type || "").trim().toLowerCase() !== "series") continue;
     const id = String(it.Id || "").trim();
     if (!/^vl-\d+$/i.test(id)) continue;
     const img = it.ImageTags && typeof it.ImageTags == "object" && !Array.isArray(it.ImageTags) ? it.ImageTags : {};
     const hasLogo = !!img.Logo;
     const hasBackdrop = Array.isArray(it.BackdropImageTags) && it.BackdropImageTags.length > 0;
-    const hasPeople = Array.isArray(it.People) && it.People.length > 0;
-    const hasOverview = !!(it.Overview && String(it.Overview).trim());
-    const primaryNeedsFix = /^v[a-z]-\d+$/i.test(String(img.Primary || "")); if (!hasLogo || !hasBackdrop || primaryNeedsFix || !hasPeople || !hasOverview) targets.push({ idx: i, id, name: String(it.Name || "").slice(0, 60), year: Number(it.ProductionYear) || null });
+    if (!hasLogo || !hasBackdrop) targets.push({ idx: i, id });
   }
-  targets.length > 45 && (targets.length = 45);
   if (!targets.length) return { payload: n, changed: !1 };
   const s = Wl(t);
   const userId = (() => {
@@ -969,91 +884,47 @@ async function enrichInfuseListArtwork(n, e, r, t = {}) {
   })();
   const results = [];
   let cursor = 0;
-  const deadline = Date.now() + 6500;
   const W = Math.min(6, targets.length);
   const workers = [];
   for (let w = 0; w < W; w++) workers.push((async () => {
     while (cursor < targets.length) {
-      if (Date.now() > deadline) break;
       const tg = targets[cursor++];
-      let meta = null, art = null;
+      let art = null;
       try {
-        const km = es(o, tg.id, "meta2");
-        meta = km ? await ts(s, km) : null;
-        if (!meta) {
-          const d = await fetchDetailRaw(o, tg.id, userId, e, t);
-          meta = d ? extractListMeta(d, tg.id) : null;
-          if (meta) {
-            meta.communityRating == null && !meta.ratingTried && (meta.communityRating = await fetchBgmRating(tg.name, tg.year), meta.ratingTried = !0);
-            km && await Cn(s, km, meta);
-          }
-        } else if (meta.communityRating == null && !meta.ratingTried) {
-          meta.communityRating = await fetchBgmRating(tg.name, tg.year);
-          meta.ratingTried = !0;
-          km && await Cn(s, km, meta);
-        }
-        art = meta && meta.art || null;
+        const k = es(o, tg.id, "artwork");
+        art = k ? await ts(s, k) : null;
         if (!art) {
-          const k = es(o, tg.id, "artwork");
-          art = k ? await ts(s, k) : null;
-          if (!art) {
-            art = await Vl(o, tg.id, userId, e, t);
-            art && k && await Cn(s, k, art);
-          }
+          art = await Vl(o, tg.id, userId, e, t);
+          art && k && await Cn(s, k, art);
         }
       } catch {
-        meta = null; art = null;
+        art = null;
       }
-      results.push({ ...tg, art, meta });
+      results.push({ ...tg, art });
     }
   })());
   await Promise.all(workers);
   let changed = !1;
   const clone = items.slice();
   for (const x of results) {
+    if (!x.art) continue;
     const it = clone[x.idx];
     if (!it) continue;
-    const meta = x.meta || null, art = x.art || (meta && meta.art) || null;
-    const adds = {};
-    if (meta) {
-      if (!String(it.Overview || "").trim() && meta.overview) adds.Overview = meta.overview;
-      if (!(Array.isArray(it.People) && it.People.length) && Array.isArray(meta.people) && meta.people.length) adds.People = meta.people;
-      if (!it.RunTimeTicks && meta.runTimeTicks) adds.RunTimeTicks = meta.runTimeTicks;
-      if (meta.premiereDate && !it.PremiereDate) adds.PremiereDate = meta.premiereDate;
-      if (meta.officialRating && !it.OfficialRating) adds.OfficialRating = meta.officialRating;
-      if (meta.communityRating != null && !(Number(it.CommunityRating) > 0)) adds.CommunityRating = meta.communityRating;
-      if (meta.mediaSource && !(Array.isArray(it.MediaSources) && it.MediaSources.length)) adds.MediaSources = [meta.mediaSource];
-    }
-    const hasAdds = Object.keys(adds).length > 0;
-    if (!art) {
-      if (hasAdds) {
-        clone[x.idx] = { ...it, ...adds };
-        changed = !0;
-      }
-      continue;
-    }
     const curImg = it.ImageTags && typeof it.ImageTags == "object" && !Array.isArray(it.ImageTags) ? it.ImageTags : {};
     const curBd = Array.isArray(it.BackdropImageTags) ? it.BackdropImageTags : [];
     const curPrimary = curImg.Primary;
-    const wantPrimary = !!art.primary && (!curPrimary || /^v[a-z]-\d+$/i.test(String(curPrimary || "")));
-    const wantLogo = !!art.logo && !curImg.Logo;
-    const wantBd = Array.isArray(art.backdrops) && art.backdrops.length > 0 && !curBd.length;
-    if (!wantPrimary && !wantLogo && !wantBd) {
-      if (hasAdds) {
-        clone[x.idx] = { ...it, ...adds };
-        changed = !0;
-      }
-      continue;
-    }
+    const wantPrimary = !!x.art.primary && (!curPrimary || /^v[a-z]-\d+$/i.test(String(curPrimary || "")));
+    const wantLogo = !!x.art.logo && !curImg.Logo;
+    const wantBd = Array.isArray(x.art.backdrops) && x.art.backdrops.length > 0 && !curBd.length;
+    if (!wantPrimary && !wantLogo && !wantBd) continue;
     const nImg = { ...curImg };
-    wantPrimary && (nImg.Primary = art.primary);
-    wantLogo && (nImg.Logo = art.logo);
+    wantPrimary && (nImg.Primary = x.art.primary);
+    wantLogo && (nImg.Logo = x.art.logo);
     clone[x.idx] = {
       ...it,
-      ...adds,
       ImageTags: nImg,
-      ...(wantPrimary && String(it.Type || "").trim().toLowerCase() === "series" ? { SeriesPrimaryImageTag: art.primary } : {}),
-      ...(wantBd ? { BackdropImageTags: art.backdrops } : {})
+      ...(wantPrimary ? { SeriesPrimaryImageTag: x.art.primary } : {}),
+      ...(wantBd ? { BackdropImageTags: x.art.backdrops } : {})
     };
     changed = !0;
   }
@@ -1105,77 +976,9 @@ async function ql(n, e, r, t = {}) {
   const d = await ts(s, l);
   return Gl(n, i, u, d);
 }
-function normalizePlayedFlags(n) {
-  let e = !1;
-  const r = (t) => {
-    if (!t || typeof t != "object" || Array.isArray(t)) return t;
-    let a = t;
-    const ud = t.UserData;
-    if (ud && typeof ud == "object" && !Array.isArray(ud) && ud.Played === !0 && Number(ud.PlayedPercentage) < 98) {
-      a = { ...t, UserData: { ...ud, Played: !1 } };
-      e = !0;
-    }
-    if (Array.isArray(t.Items)) {
-      const s = t.Items.map(r);
-      s.some((i, c) => i !== t.Items[c]) && (a = a === t ? { ...t, Items: s } : { ...a, Items: s });
-    }
-    return a;
-  };
-  return { payload: r(n), changed: e };
-}
-function normalizePeopleTags(n) {
-  let e = !1;
-  const r = (t) => {
-    if (!t || typeof t != "object" || Array.isArray(t)) return t;
-    let a = t;
-    const o = t.People;
-    if (Array.isArray(o)) {
-      const s = o.map((i) => {
-        if (!i || typeof i != "object" || Array.isArray(i)) return i;
-        const c = Mr(String(i.PrimaryImageTag || ""));
-        return c && c !== i.PrimaryImageTag ? (e = !0, { ...i, PrimaryImageTag: c }) : i;
-      });
-      s.some((i, c) => i !== o[c]) && (a = { ...t, People: s });
-    }
-    if (Array.isArray(t.Items)) {
-      const s = t.Items.map(r);
-      s.some((i, c) => i !== t.Items[c]) && (a = a === t ? { ...t, Items: s } : { ...a, Items: s });
-    }
-    return a;
-  };
-  return { payload: r(n), changed: e };
-}
-function respCachePlan(n) {
-  const u = n?.requestUrl instanceof URL ? n.requestUrl : null;
-  if (!u || !u.pathname) return null;
-  const p = u.pathname;
-  if (/\/items\/resume\/?$/i.test(p)) return null;
-  let ttl = 0;
-  if (/\/(?:localtrailers|specialfeatures)\/?$/i.test(p)) ttl = 3600;
-  else if (/^\/(?:emby\/)?users\/[^/]+\/views\/?$/i.test(p)) ttl = 300;
-  if (!ttl) return null;
-  const q = (u.search || "").replace(/([?&])api_key=[^&]*/i, "$1api_key=");
-  return { req: new Request(`https://infuse-resp-cache-v2.invalid${p}${q}`), ttl };
-}
 async function Xl(n, e, r = {}) {
   const t = n?.request, a = e?.response;
   if (!Gt(t) || !kl(n?.proxyPath || n?.requestUrl?.pathname) || String(n?.requestMethod || t?.method || "GET").toUpperCase() === "HEAD" || !a || !(a.status >= 200 && a.status < 300) || !a.body || !go(a.headers.get("Content-Type"))) return e;
-  const cp = respCachePlan(n), sc = Wl(r);
-  if (cp && sc) {
-    let hit = null;
-    try {
-      hit = await sc.match(cp.req);
-    } catch {
-    }
-    if (hit) {
-      try {
-        Promise.resolve(a.body.cancel()).catch(() => {
-        });
-      } catch {
-      }
-      return { ...e, response: hit, infuseRespCache: "hit" };
-    }
-  }
   const o = await Re(a.clone(), r.maxBytes || Qs);
   if (o.exceeded || !o.text) return e;
   let s;
@@ -1184,28 +987,16 @@ async function Xl(n, e, r = {}) {
   } catch {
     return e;
   }
-  const put = async (txt) => {
-    if (!cp || !sc || !txt) return;
-    try {
-      await sc.put(cp.req, new Response(txt, { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${cp.ttl}` } }));
-    } catch {
-    }
-  };
-  const pf = normalizePlayedFlags(s), y = normalizePeopleTags(pf.payload), i = Kl(y.payload), c = await ql(i.payload, n, e, r), w = await enrichInfuseListArtwork(c.payload, n, e, r);
-  if (!pf.changed && !y.changed && !i.changed && !c.changed && !w.changed) {
-    await put(o.text);
-    return e;
-  }
+  const i = Kl(s), c = await ql(i.payload, n, e, r), w = await enrichInfuseListArtwork(c.payload, n, e, r);
+  if (!i.changed && !c.changed && !w.changed) return e;
   try {
     Promise.resolve(a.body.cancel()).catch(() => {
     });
   } catch {
   }
-  const out = JSON.stringify(w.payload);
-  await put(out);
   return {
     ...e,
-    response: new Response(out, {
+    response: new Response(JSON.stringify(w.payload), {
       status: a.status,
       statusText: a.statusText,
       headers: Zs(a.headers)
@@ -23295,19 +23086,27 @@ var Ch = class {
         if (_mth !== "GET" && _mth !== "HEAD") return null;
         const _u = new URL(n.url), _tag = _u.searchParams.get("tag") || "";
         if (!_tag) return null;
-        const _m = /^\/(?:[^\/]+\/)?(?:emby\/)?Items\/([A-Za-z0-9_-]{2,100})\/Images\/(Primary|Backdrop|Logo|Thumb)(?:\/\d+)?\/?$/i.exec(_u.pathname);
+        const _m = /^\/(?:[^\/]+\/)?(?:emby\/)?Items\/(vb-[A-Za-z0-9_-]{2,100})\/Images\/(Primary|Backdrop|Logo|Thumb)(?:\/\d+)?\/?$/i.exec(_u.pathname);
         if (!_m) return null;
-        let _isVb = /^vb-/.test(_m[1]);
-        if (!_isVb && /^\d{2,12}$/.test(_m[1])) {
-          try {
-            const _dec = atob(_tag.replace(/-/g, "+").replace(/_/g, "/"));
-            _isVb = /^[0-9a-f]{4,16}\.(png|jpe?g|webp)$/i.test(_dec);
-          } catch {}
-        }
-        if (!_isVb) return null;
-        const _path = "/emby/Items/" + _m[1] + "/Images/" + _m[2];
+        const _base = "https://video.emos.best/emby/Items/" + _m[1] + "/Images/" + _m[2];
         const _qs = "tag=" + encodeURIComponent(_tag);
-        const _target = "https://video.emos.best" + _path + "?" + _qs;
+        const _target = _base + "?" + _qs;
+        const _mkH = (_withXff) => {
+          const _h = { "User-Agent": n.headers.get("User-Agent") || "Infuse-Direct/8.5.2", "Accept": n.headers.get("Accept") || "*/*", "Accept-Language": n.headers.get("Accept-Language") || "zh-CN,zh-Hans;q=0.9" };
+          const _xem = n.headers.get("X-Emby-Authorization");
+          if (_xem) _h["X-Emby-Authorization"] = _xem;
+          const _xet = n.headers.get("X-Emby-Token");
+          if (_xet) _h["X-Emby-Token"] = _xet;
+          const _rng2 = n.headers.get("Range");
+          if (_rng2) _h["Range"] = _rng2;
+          const _cc2 = n.headers.get("Cache-Control");
+          if (_cc2) _h["Cache-Control"] = _cc2;
+          if (_withXff) {
+            const _ip = n.headers.get("CF-Connecting-IP") || "";
+            if (_ip) { _h["X-Forwarded-For"] = _ip; _h["X-Real-IP"] = _ip; }
+          }
+          return _h;
+        };
         const _rng = n.headers.get("Range");
         const _cc = n.headers.get("Cache-Control");
         const _cache = typeof caches < "u" && caches && caches.default ? caches.default : null;
@@ -23316,29 +23115,35 @@ var Ch = class {
           const _hit = await _cache.match(_ck);
           if (_hit && _hit.status === 200) {
             const _hh = new Headers(_hit.headers);
-            _hh.set("X-Emby-Proxy-Cover", "v5-hit");
+            _hh.set("X-Emby-Proxy-Cover", "v4-hit");
             return new Response(_mth === "HEAD" ? null : _hit.body, { status: 200, headers: _hh });
           }
         }
-        const _mirrors = [
-          "https://emos.cnmbyd.xyz",
-          "https://emos.saga8.dpdns.org",
-          "https://emos.goldenarch.qzz.io",
-          "https://emos.767873.xyz",
-          "https://dx.dirige.de5.net"
-        ];
         const _diag = [];
-        for (const _mir of _mirrors) {
-          const _mh = _mir.replace(/^https?:\/\//, "");
-          let _resp = null;
+        const _attempts = [
+          { id: "a1", url: _target, xff: !0 },
+          { id: "a2", url: _target, xff: !1 },
+          { id: "a3", url: _base + "/0?" + _qs, xff: !0 },
+          { id: "a4", url: _base + "/0?" + _qs, xff: !1 }
+        ];
+        for (const _att of _attempts) {
+          let _resp = null, _hop = 0, _url = _att.url;
+          const _reqH = _mkH(_att.xff);
           try {
-            const _ctl = typeof AbortController < "u" ? new AbortController() : null;
-            const _tm = _ctl ? setTimeout(() => { try { _ctl.abort(); } catch {} }, 8000) : null;
-            try {
-              _resp = await fetch(_mir + _path + "?" + _qs, { method: "GET", headers: { "User-Agent": n.headers.get("User-Agent") || "Infuse-Direct/8.5.2", "Accept": n.headers.get("Accept") || "*/*" }, redirect: "manual", signal: _ctl ? _ctl.signal : undefined });
-            } finally { if (_tm) clearTimeout(_tm); }
+            while (_hop < 5) {
+              _resp = await fetch(_url, { method: "GET", headers: _reqH, redirect: "manual" });
+              if (_resp && _resp.status >= 300 && _resp.status < 400 && _resp.headers.has("Location")) {
+                const _nl = _resp.headers.get("Location");
+                try { Promise.resolve(_resp.body?.cancel?.()).catch(() => {}); } catch {}
+                _url = new URL(_nl, _url).toString();
+                _hop++;
+                continue;
+              }
+              break;
+            }
           } catch (_e) {
-            _diag.push(_mh + ":ERR:" + String(_e && _e.message || _e).slice(0, 40));
+            _diag.push(_att.id + ":ERR:" + String(_e && _e.message || _e).slice(0, 50) + "@" + _hop);
+            try { Promise.resolve(_resp && _resp.body && _resp.body.cancel && _resp.body.cancel()).catch(() => {}); } catch {}
             continue;
           }
           if (_resp && _resp.status >= 200 && _resp.status < 300) {
@@ -23346,7 +23151,7 @@ var Ch = class {
             _h.set("Access-Control-Allow-Origin", "*");
             _h.set("Cross-Origin-Resource-Policy", "cross-origin");
             if (_resp.status === 200) _h.set("Cache-Control", "public, max-age=604800, immutable");
-            _h.set("X-Emby-Proxy-Cover", "v5-" + _mh);
+            _h.set("X-Emby-Proxy-Cover", "v4-" + _att.id + "-" + _hop);
             if (_mth === "HEAD") {
               if (_ck && _resp.status === 200) {
                 const _putH = _cache.put(_ck, new Response(_resp.body, { status: _resp.status, headers: _h })).catch(() => {});
@@ -23365,7 +23170,7 @@ var Ch = class {
             }
             return _out;
           }
-          _diag.push(_mh + ":" + (_resp ? _resp.status : 0));
+          _diag.push(_att.id + ":" + (_resp ? _resp.status : 0) + "@" + _hop + ":" + _url.replace(/^https?:\/\//, "").slice(0, 45));
           try { Promise.resolve(_resp && _resp.body && _resp.body.cancel && _resp.body.cancel()).catch(() => {}); } catch {}
         }
         return new Response(null, {
@@ -23374,7 +23179,7 @@ var Ch = class {
             Location: _target,
             "Cache-Control": "no-store",
             "Access-Control-Allow-Origin": "*",
-            "X-Emby-Proxy-Cover": "v5-fallback",
+            "X-Emby-Proxy-Cover": "v4-fallback",
             "X-Emby-Proxy-Cover-Diag": _diag.join(" | ").slice(0, 300)
           }
         });
