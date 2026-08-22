@@ -1262,9 +1262,9 @@ function Jl(n = null) {
   if (!t) return null;
   const a = Yl(t);
   if (!a) return null;
-  const o = s[2].toLowerCase(), i = o === "backdrop" ? "w1280" : "w500";
+  const o = s[2].toLowerCase(), i = o === "logo" ? "w1280" : "original";
   try {
-    a.pathname = a.pathname.replace(/^\/(?:original|w1280)\//i, "/" + i + "/");
+    a.pathname = a.pathname.replace(/^\/(?:original|w1280|w500)\//i, "/" + i + "/");
   } catch {
   }
   return a;
