@@ -16041,7 +16041,10 @@ function $g(n = {}, e = {}) {
         const h = await e.tryServePlaybackInfoResponseCache(u, g);
         if (h) return h;
         const y = await Ol(u, p[0]?.targetUrl, { headers: g.newHeaders });
-        y && (u.proxyPath = y.proxyPath, u.requestUrl = new URL(u.requestUrl.toString()), u.requestUrl.pathname = y.proxyPath, u.requestUrl.search = y.search, u.forceWorkerProxy = !0, u.infuseStreamRewrite = "playback_info");
+        if (y) {
+          const A = u.entryRoutingDecision?.action === "DIRECT";
+          u.proxyPath = y.proxyPath, u.requestUrl = new URL(u.requestUrl.toString()), u.requestUrl.pathname = y.proxyPath, u.requestUrl.search = y.search, u.forceWorkerProxy = !A, u.forceWorkerProxyReason = A ? "" : "rewrite_playback_entry_proxy", u.infuseStreamRewrite = "playback_info";
+        }
         const _ = e.createBuildFetchOptions(u, g), S = await e.maybeBuildEntryDirectResponse(u, f, g, _);
         if (S) return S;
         const A = await e.maybeHandlePlaybackProgressRelay(u, g, _, g.retryTargetRecords);
