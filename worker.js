@@ -528,7 +528,8 @@ async function Ol(n, e, r = {}) {
   }
   return h.origin !== e.origin || !/^\/(?:emby\/)?emya\/video\/?$/i.test(h.pathname) ? null : {
     proxyPath: "/emya/video",
-    search: h.search
+    search: h.search,
+    upstreamPath: h.pathname
   };
 }
 function vl(n = "") {
@@ -16041,7 +16042,14 @@ function $g(n = {}, e = {}) {
         const h = await e.tryServePlaybackInfoResponseCache(u, g);
         if (h) return h;
         const y = await Ol(u, p[0]?.targetUrl, { headers: g.newHeaders });
-        y && (u.proxyPath = y.proxyPath, u.requestUrl = new URL(u.requestUrl.toString()), u.requestUrl.pathname = y.proxyPath, u.requestUrl.search = y.search, u.forceWorkerProxy = !0, u.infuseStreamRewrite = "playback_info");
+        if (y) {
+          const _sm = String((u.node && (u.node.mainVideoStreamMode ?? u.node.wangpanDirectMode ?? u.node.wangpanMode)) || "").trim().toLowerCase();
+          if (_sm === "direct" || _sm === "302" || _sm === "redirect") {
+            const _org = new URL(String(p[0]?.targetUrl || "https://invalid.local/")).origin;
+            return new Response(null, { status: 302, headers: { Location: _org + y.upstreamPath + y.search, "Cache-Control": "no-store" } });
+          }
+          u.proxyPath = y.proxyPath, u.requestUrl = new URL(u.requestUrl.toString()), u.requestUrl.pathname = y.proxyPath, u.requestUrl.search = y.search, u.forceWorkerProxy = !0, u.infuseStreamRewrite = "playback_info";
+        }
         const _ = e.createBuildFetchOptions(u, g), S = await e.maybeBuildEntryDirectResponse(u, f, g, _);
         if (S) return S;
         const A = await e.maybeHandlePlaybackProgressRelay(u, g, _, g.retryTargetRecords);
