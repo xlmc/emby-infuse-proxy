@@ -16049,7 +16049,11 @@ function $g(n = {}, e = {}) {
           const _rh0 = String((u.node && (u.node.streamRedirectHost || u.node.streamLine)) || "").trim();
           const _rh = _rh0 && /^https?:\/\//i.test(_rh0) ? _rh0.replace(/\/+$/, "") : /(?:^|\.)emos\.best$/i.test(new URL(_upOrg).hostname) ? "https://emos.cnmbyd.xyz" : "";
           const _org = _rh || _upOrg;
-            return new Response(null, { status: 302, headers: { Location: _org + (/^\/emby\//i.test(y.upstreamPath) ? y.upstreamPath : "/emby" + y.upstreamPath) + y.search, "Cache-Control": "no-store" } });
+            const _lp = (/^\/emby\//i.test(y.upstreamPath) ? y.upstreamPath : "/emby" + y.upstreamPath);
+          const _sl = String((u.node && u.node.streamLine) || "").trim();
+          let _sq = y.search;
+          if (_sl && _sq) _sq = /([?&])line=[^&]*/i.test(_sq) ? _sq.replace(/([?&])line=[^&]*/i, "$1line=" + encodeURIComponent(_sl)) : _sq + "&line=" + encodeURIComponent(_sl);
+          return new Response(null, { status: 302, headers: { Location: _org + _lp + _sq, "Cache-Control": "no-store" } });
           }
           u.proxyPath = y.proxyPath, u.requestUrl = new URL(u.requestUrl.toString()), u.requestUrl.pathname = y.proxyPath, u.requestUrl.search = y.search, u.forceWorkerProxy = !0, u.infuseStreamRewrite = "playback_info";
         }
