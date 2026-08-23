@@ -9,8 +9,8 @@ Cloudflare Worker API 部署脚本（Python，无 Node 依赖）
   1. 列出账号 (account_id)
   2. 通过自定义域 zzzj.de5.net 找到对应的 worker 脚本名
   3. 备份当前线上脚本到 桌面\worker-backup-<时间>.js
-  4. 快照当前 settings (compatibility_date / flags / bindings)
-  5. 上传桌面 worker.js (module 格式, keep_bindings=true)
+  4. 从当前活动 Worker 版本读取 compatibility / bindings
+  5. 上传 worker.js（module 格式，保留现有 bindings）
   6. 探测线上验证 v5 生效
 """
 import sys, os, json, time, urllib.request, urllib.error, ssl
@@ -104,20 +104,27 @@ def main():
     else:
         print('== 警告: 备份失败 (HTTP %d, %d B)，继续部署' % (st, len(backup) if isinstance(backup, bytes) else -1))
 
-    # 4. 快照 settings
-    st, j = call(token, 'GET', '/accounts/%s/workers/scripts/%s/settings' % (account_id, script_name))
-    compat_date = '2026-03-13'
-    compat_flags = ['enable_request_signal']
+    # 4. 从当前活动版本读取资源。/settings 不会返回版本绑定，不能用于 keep_bindings。
+    compat_date = ''
+    compat_flags = []
     bindings = []
-    if st == 200 and j.get('success'):
-        r = j.get('result', {}) or {}
-        compat_date = r.get('compatibility_date') or compat_date
-        compat_flags = r.get('compatibility_flags') or compat_flags
-        bindings = r.get('bindings') or []
-        print('== 当前 settings ==\n  compat_date=%s flags=%s' % (compat_date, compat_flags))
+    st, j = call(token, 'GET', '/accounts/%s/workers/scripts/%s/deployments' % (account_id, script_name))
+    deployments = (j.get('result') or {}).get('deployments') or []
+    active_versions = deployments[0].get('versions') or [] if st == 200 and j.get('success') and deployments else []
+    active_version_id = active_versions[0].get('version_id') if active_versions else ''
+    if active_version_id:
+        vst, vj = call(token, 'GET', '/accounts/%s/workers/scripts/%s/versions/%s' % (account_id, script_name, active_version_id))
+        if vst == 200 and vj.get('success'):
+            resources = (vj.get('result') or {}).get('resources') or {}
+            script = resources.get('script') or {}
+            compat_date = script.get('compatibility_date') or ''
+            compat_flags = script.get('compatibility_flags') or []
+            bindings = resources.get('bindings') or []
+    if bindings:
+        print('== 当前活动版本 ==\n  version=%s compat_date=%s flags=%s' % (active_version_id, compat_date or '(inherit)', compat_flags))
         print('  bindings: ' + ', '.join('%s(%s)' % (b.get('name'), b.get('type')) for b in bindings))
     else:
-        print('== 警告: 读取 settings 失败，使用默认 compat %s' % compat_date)
+        die('无法读取当前活动版本的 bindings；为防止清空配置，已停止上传')
 
     if dry:
         print('== DRY-RUN 结束（未上传）==')
@@ -128,10 +135,12 @@ def main():
     keep_types = sorted(set(b.get('type') for b in bindings if b.get('type') and b.get('type') != 'assets')) or None
     metadata = {
         'main_module': 'worker.js',
-        'compatibility_date': compat_date,
-        'compatibility_flags': compat_flags,
         'keep_bindings': keep_types,
     }
+    if compat_date:
+        metadata['compatibility_date'] = compat_date
+    if compat_flags:
+        metadata['compatibility_flags'] = compat_flags
     boundary = '----cfdeploy' + str(int(time.time()))
     parts = []
     parts.append(('--%s\r\nContent-Disposition: form-data; name="metadata"\r\nContent-Type: application/json\r\n\r\n%s\r\n' % (boundary, json.dumps(metadata))).encode())
