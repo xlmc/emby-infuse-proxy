@@ -60,9 +60,29 @@ Workers → 你的脚本 → Settings → Domains → 绑定域名（如 `emby.e
   "tag": "EMOS",
   "playbackInfoMode": "rewrite",
   "mediaAuthMode": "emby",
+  "mainVideoStreamMode": "direct",
   "schemaVersion": 6
 }
 ```
+
+### 6.1 视频带宽优化（建议先开启）
+`mainVideoStreamMode` 决定大文件的传输数据面：
+
+| 值 | 行为 | 适用场景 |
+|---|---|---|
+| `direct` | Worker 仅处理 Emby API / 鉴权；`/Videos/*` 等主视频请求返回 307，让 Infuse 直接跟随上游（或上游签发的网盘）下载地址 | 追求播放与测速带宽；这是默认推荐值 |
+| `proxy` | Worker 持续中转主视频数据，包括上游的外部重定向 | 必须隐藏源站或统一审计 / 访问控制 |
+| `inherit`（或省略） | 兼容旧配置：由节点遗留的 `direct` / 标签配置决定 | 旧部署平滑迁移 |
+
+`direct` 仍使用本 Worker 作为 Emby 接入地址；只是不让媒体字节流经过 Worker。对于能“跑满带宽”的同类反代，这通常正是差异所在：外部 302/307 被交给客户端，而非由 Worker 继续拉取再转发。
+
+如果上游或网盘地址仅允许 Worker IP 访问，或客户端的鉴权无法随重定向传递，请改回：
+
+```json
+"mainVideoStreamMode": "proxy"
+```
+
+验证方法：在管理台访问日志中查看视频请求；开启后应显示 `deliveryMode=direct` / `entry_307` 或 `client_redirect`，而非 `worker_proxy`。视频仍显示为约 100 Mbps 时，说明瓶颈已经在客户端到上游（或上游到其网盘）的链路上，而不是这段 Worker 代码。
 
 ### 7. Infuse 接入
 Infuse → 设置 → 存储 → 添加 Emby → 服务器地址填 **Worker 的自定义域** → 用上游账号密码登录。首次同步会做元数据增肥（较慢），同步 2 次后全部就位。
@@ -70,6 +90,7 @@ Infuse → 设置 → 存储 → 添加 Emby → 服务器地址填 **Worker 的
 ## 注意事项
 - 图片镜像列表在 `worker.js` 的 `_mirrors` 数组中，可按需增删
 - 评分匹配未命中的条目（多为综艺/冷门真人影视）保持无评分，不会错配
+- CloudflareSpeedTest 只能帮助客户端挑选更合适的 Cloudflare Anycast 入口 IP；它不能提升 Worker 到上游或网盘的带宽。要让 Infuse 使用测试结果，需在播放设备实际使用的 DNS 中完成域名到该 IP 的映射，并保留原域名的 TLS SNI。
 - Infuse 主屏「继续观看」遵循其自身规则：进度过短（<约 2%）不显示、接近看完（>约 90%）且已是最后一集会移出——这是客户端行为，与代理无关
 - 回滚：`cf_deploy.py` 每次部署前自动备份线上版本到本地 `worker-backup-<时间>.js`
 

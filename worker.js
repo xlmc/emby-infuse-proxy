@@ -484,7 +484,9 @@ function xl(n = "") {
   return /^\/emby(?:\/|$)/i.test(e) ? e.slice(5) || "/" : e;
 }
 function Gt(n = null) {
-  return /(?:^|\s|-)infuse(?:[\s/-]|$)/i.test(String(n?.headers?.get?.("User-Agent") || ""));
+  const e = n?.headers, r = ["User-Agent", "X-Emby-Client", "X-MediaBrowser-Client"].map((t) => String(e?.get?.(t) || ""));
+  if (r.some((t) => /(?:^|\s|-)infuse(?:[\s/-]|$)/i.test(t))) return !0;
+  return /(?:^|[,\s])Client\s*=\s*"?Infuse(?:"|[,\s]|$)/i.test(String(e?.get?.("X-Emby-Authorization") || e?.get?.("Authorization") || ""));
 }
 async function Ol(n, e, r = {}) {
   const t = n?.request;
@@ -750,23 +752,23 @@ function Wl(n = {}) {
 }
 function es(n, e, r) {
   const t = String(n?.hostname || "").toLowerCase();
-  const idOk = String(r || "") === "meta2" ? /^v[le]-\d+$/i : /^vl-\d+$/i;
-  return !t || !idOk.test(String(e || "")) || !/^(artwork|seasons|meta2)$/.test(String(r || "")) ? null : new Request(`https://infuse-series-context-cache-v2.invalid/${encodeURIComponent(t)}/${encodeURIComponent(e)}/${r}`);
+  const idOk = /^(?:meta2|meta4)$/.test(String(r || "")) ? /^v[le]-\d+$/i : /^vl-\d+$/i;
+  return !t || !idOk.test(String(e || "")) || !/^(artwork|seasons|meta2|meta4)$/.test(String(r || "")) ? null : new Request(`https://infuse-series-context-cache-v2.invalid/${encodeURIComponent(t)}/${encodeURIComponent(e)}/${r}`);
 }
-async function ts(n, e) {
+async function ts(n, e, r = 131072) {
   if (!n || !e) return null;
-  let r;
+  let t;
   try {
-    r = await n.match(e);
+    t = await n.match(e);
   } catch {
     return null;
   }
-  if (!r) return null;
-  const t = await Re(r, 131072);
-  if (t.exceeded || !t.text) return null;
+  if (!t) return null;
+  const a = await Re(t, r);
+  if (a.exceeded || !a.text) return null;
   try {
-    const a = JSON.parse(t.text);
-    return a && typeof a == "object" && !Array.isArray(a) ? a : null;
+    const o = JSON.parse(a.text);
+    return o && typeof o == "object" && !Array.isArray(o) ? o : null;
   } catch {
     return null;
   }
@@ -776,7 +778,7 @@ async function Cn(n, e, r) {
     try {
       await n.put(e, new Response(JSON.stringify(r), { headers: {
         "Content-Type": "application/json; charset=utf-8",
-        "Cache-Control": `public, max-age=${Dl}, stale-while-revalidate=86400`
+        "Cache-Control": `public, max-age=${Dl}`
       } }));
     } catch {
     }
@@ -859,7 +861,7 @@ async function Vl(n, e, r, t, a = {}) {
     return null;
   }
 }
-async function fetchBgmRating(name, year) {
+async function fetchBgmRating(name, year, signal = null) {
   const nm = String(name || "").trim();
   if (!nm) return null;
   let rows = null;
@@ -867,7 +869,8 @@ async function fetchBgmRating(name, year) {
     const r = await fetch("https://api.bgm.tv/v0/search/subjects", {
       method: "POST",
       headers: { "User-Agent": "zzzj-emby-proxy/1.0 (rating)", "Accept": "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify({ keyword: nm.slice(0, 60), filter: { type: [2, 6] } })
+      body: JSON.stringify({ keyword: nm.slice(0, 60), filter: { type: [2, 6] } }),
+      ...(signal ? { signal } : {})
     });
     if (r.ok) rows = (await r.json().catch(() => null))?.data || null;
   } catch {}
@@ -884,183 +887,333 @@ async function fetchBgmRating(name, year) {
   }
   return null;
 }
-async function fetchDetailRaw(n, e, r, t, a = {}) {
-  const o = ti(n, "/Users/" + encodeURIComponent(r || "") + "/Items/" + encodeURIComponent(e));
-  if (!o) return null;
-  const s = a?.newHeaders instanceof Headers ? new Headers(a.newHeaders) : new Headers(t?.request?.headers || {});
-  s.delete("Range"); s.delete("Content-Length"); s.set("Accept", "application/json");
+function cleanMetaStrings(n, e = 32) {
+  const r = [], t = /* @__PURE__ */ new Set();
+  if (!Array.isArray(n)) return r;
+  for (const a of n) {
+    const o = String(typeof a == "string" ? a : a?.Name || "").trim().slice(0, 160), s = o.toLowerCase();
+    if (!o || t.has(s)) continue;
+    if (t.add(s), r.push(o), r.length >= e) break;
+  }
+  return r;
+}
+function cleanMetaPairs(n, e = 24) {
+  const r = [], t = /* @__PURE__ */ new Set();
+  if (!Array.isArray(n)) return r;
+  for (const a of n) {
+    const o = String(typeof a == "string" ? a : a?.Name || "").trim().slice(0, 160), s = String(typeof a == "object" && a ? a.Id || "" : "").trim().slice(0, 160), i = `${s}\0${o.toLowerCase()}`;
+    if (!o || t.has(i)) continue;
+    t.add(i);
+    const c = { Name: o };
+    s && (c.Id = s), r.push(c);
+    if (r.length >= e) break;
+  }
+  return r;
+}
+function normalizeMetaPeople(n, e = 36) {
+  if (!Array.isArray(n)) return [];
+  const r = n.filter((u) => u && typeof u == "object" && !Array.isArray(u) && String(u.Name || "").trim()), t = [
+    ...r.filter((u) => String(u.Type || "Actor").toLowerCase() === "actor"),
+    ...r.filter((u) => String(u.Type || "Actor").toLowerCase() !== "actor")
+  ], a = [], o = /* @__PURE__ */ new Set();
+  for (const u of t) {
+    const d = String(u.Name || "").trim().slice(0, 160), p = String(u.Type || "Actor").trim().slice(0, 40) || "Actor", m = String(u.Role || "").trim().slice(0, 160), g = Mr(String(u.PrimaryImageTag || "")), f = `${d.toLowerCase()}\0${m.toLowerCase()}\0${p.toLowerCase()}\0${g}`;
+    if (o.has(f)) continue;
+    o.add(f);
+    const h = { Id: String(u.Id || "").trim().slice(0, 160), Name: d, Type: p };
+    m && (h.Role = m), g && (h.PrimaryImageTag = g), a.push(h);
+    if (a.length >= e) break;
+  }
+  const s = a.length > 1 ? $l(a).people : a, i = /* @__PURE__ */ new Set();
+  return s.map((u) => {
+    let d = String(u.Id || "").trim(), p = `${u.Name}\0${u.Role || ""}\0${u.Type || ""}\0${u.PrimaryImageTag || ""}`, m = `${Nl}${Hl(p)}`, g = 1;
+    if (!d || i.has(d)) {
+      d = m;
+      while (i.has(d)) d = `${m}-${++g}`;
+    }
+    return i.add(d), d === u.Id ? u : { ...u, Id: d };
+  });
+}
+function peopleMetaScore(n) {
+  if (!Array.isArray(n)) return 0;
+  const e = n.filter((a) => a && typeof a == "object" && !Array.isArray(a) && String(a.Name || "").trim());
+  if (!e.length) return 0;
+  const r = new Set(e.map((a) => String(a.Id || "").trim()).filter(Boolean)).size, t = e.filter((a) => String(a.Type || "Actor").toLowerCase() === "actor").length, o = e.filter((a) => String(a.PrimaryImageTag || "").trim()).length;
+  return e.length * 4 + r + t * 2 + o;
+}
+function peopleMetaUsable(n) {
+  if (!Array.isArray(n)) return !1;
+  const e = n.filter((t) => t && typeof t == "object" && !Array.isArray(t) && String(t.Name || "").trim()), r = e.map((t) => String(t.Id || "").trim());
+  return e.length > 0 && r.every(Boolean) && new Set(r).size === e.length;
+}
+function mediaMetaScore(n) {
+  if (!Array.isArray(n)) return 0;
+  let e = 0;
+  for (const r of n) {
+    if (!r || typeof r != "object" || Array.isArray(r)) continue;
+    r.Container && (e += 2), Number(r.Size) > 0 && (e += 1), Number(r.RunTimeTicks) > 0 && (e += 1);
+    if (Array.isArray(r.MediaStreams)) for (const t of r.MediaStreams) t && typeof t == "object" && !Array.isArray(t) && (e += 3, t.DisplayTitle && (e += 1), t.Codec && (e += 1));
+  }
+  return e;
+}
+function mediaMetaUsable(n) {
+  if (!Array.isArray(n)) return !1;
+  return n.some((e) => e && typeof e == "object" && !Array.isArray(e) && Array.isArray(e.MediaStreams) && e.MediaStreams.some((r) => r && typeof r == "object" && !Array.isArray(r) && String(r.Type || "").trim() && (String(r.Codec || "").trim() || String(r.DisplayTitle || "").trim() || Number(r.Width) > 0 || Number(r.Height) > 0 || Number(r.Channels) > 0 || String(r.VideoRange || "").trim())));
+}
+function scrubMediaSource(n) {
+  if (!n || typeof n != "object" || Array.isArray(n)) return null;
   try {
-    const i = await (a.fetch ?? fetch)(o.toString(), { headers: s });
-    if (!i.ok) return null;
-    return await i.json().catch(() => null);
+    const e = JSON.parse(JSON.stringify(n)), r = (t) => {
+      if (!t || typeof t != "object") return t;
+      if (Array.isArray(t)) return t.map(r);
+      const a = {};
+      for (const [o, s] of Object.entries(t)) /(?:url|token|path|headers?|key|authorization|cookie|signature)$/i.test(o) || o === "Chapters" || (a[o] = r(s));
+      return a;
+    }, t = r(e);
+    if (Array.isArray(t.MediaStreams)) {
+      t.MediaStreams = t.MediaStreams.filter((a) => a && typeof a == "object").slice(0, 12);
+      t.MediaStreams.length || delete t.MediaStreams;
+    } else delete t.MediaStreams;
+    return t;
   } catch {
     return null;
   }
 }
-function extractListMeta(n, e = "") {
+function extractListMeta(n, e = "", detailTried = !1) {
   if (!n || typeof n != "object" || Array.isArray(n)) return null;
-  const people0 = Array.isArray(n.People) ? n.People.filter((p) => p && typeof p == "object" && !Array.isArray(p)).slice(0, 30).map((p) => {
-    const tag = Mr(String(p.PrimaryImageTag || ""));
-    const o = { Id: String(p.Id || ""), Name: String(p.Name || ""), Type: String(p.Type || "Actor") };
-    return p.Role && (o.Role = String(p.Role)), tag && (o.PrimaryImageTag = tag), o;
-  }) : [];
-  const people = people0.length > 1 ? $l(people0).people : people0;
-  const ms = Array.isArray(n.MediaSources) && n.MediaSources[0] && typeof n.MediaSources[0] == "object" ? n.MediaSources[0] : null;
-  const runTimeTicks = Number(n.RunTimeTicks) || Number(ms && ms.RunTimeTicks) || 0;
-  let mediaSource = null;
-  if (ms) {
-    try {
-      mediaSource = JSON.parse(JSON.stringify(ms));
-      if (mediaSource && typeof mediaSource == "object" && !Array.isArray(mediaSource)) {
-        for (const key of ["DirectStreamUrl", "TranscodingUrl", "TranscodingSubUrl", "EncodeUrl", "OpenToken", "DirectPlayUrl"])
-          delete mediaSource[key];
-        if (Array.isArray(mediaSource.MediaStreams)) {
-          mediaSource.MediaStreams = mediaSource.MediaStreams.filter((x) => x && typeof x == "object").slice(0, 12);
-          if (!mediaSource.MediaStreams.length) delete mediaSource.MediaStreams;
-        } else delete mediaSource.MediaStreams;
-      } else mediaSource = null;
-    } catch {
-      mediaSource = null;
-    }
+  const r = normalizeMetaPeople(n.People), t = Array.isArray(n.MediaSources) && n.MediaSources[0] && typeof n.MediaSources[0] == "object" ? n.MediaSources[0] : null, a = Number(n.RunTimeTicks) || Number(t && t.RunTimeTicks) || 0, o = cleanMetaPairs(n.GenreItems), s = cleanMetaStrings([...(Array.isArray(n.Genres) ? n.Genres : []), ...o]), i = cleanMetaPairs(n.TagItems, 32), c = cleanMetaStrings([...(Array.isArray(n.Tags) ? n.Tags : []), ...i], 32), l = cleanMetaPairs(n.Studios, 16), u = cleanMetaStrings(Array.isArray(n.Taglines) ? n.Taglines : n.Tagline ? [n.Tagline] : [], 4), d = cleanMetaStrings(n.ProductionLocations, 12), p = {};
+  if (n.ProviderIds && typeof n.ProviderIds == "object" && !Array.isArray(n.ProviderIds)) for (const [m, g] of Object.entries(n.ProviderIds).slice(0, 16)) {
+    const f = String(m || "").trim().slice(0, 80), h = String(g || "").trim().slice(0, 240);
+    f && h && (p[f] = h);
   }
   return {
+    schema: 4,
+    detailTried: !!detailTried,
     art: ei(n, e),
     overview: String(n.Overview || "").replace(/^[ \t\r]*v[a-z]-\d+\s*#\s*/i, "").replace(/^[ \t\r]*感谢\s*emos\s*提供储存[ \t\r]*/i, "").replace(/^[\r\n]+/, "").trim() || null,
-    people: people.length ? people : [],
-    runTimeTicks: runTimeTicks > 0 ? runTimeTicks : null,
+    people: r,
+    genres: s,
+    genreItems: o,
+    tags: c,
+    tagItems: i,
+    studios: l,
+    taglines: u,
+    productionLocations: d,
+    originalTitle: String(n.OriginalTitle || "").trim().slice(0, 240) || null,
+    providerIds: Object.keys(p).length ? p : null,
+    runTimeTicks: a > 0 ? a : null,
+    productionYear: Number(n.ProductionYear) > 0 ? Number(n.ProductionYear) : null,
     premiereDate: n.PremiereDate || null,
     officialRating: n.OfficialRating || null,
     communityRating: Number.isFinite(Number(n.CommunityRating)) && Number(n.CommunityRating) > 0 ? Number(n.CommunityRating) : null,
+    criticRating: Number.isFinite(Number(n.CriticRating)) && Number(n.CriticRating) > 0 ? Number(n.CriticRating) : null,
     ratingTried: !1,
-    mediaSource
+    mediaSource: scrubMediaSource(t)
   };
 }
+function listMetaBatchCacheKey(n, e, r, t) {
+  if (!n || !Array.isArray(r) || !r.length) return null;
+  try {
+    const a = n instanceof URL ? n : new URL(String(n)), o = `${a.origin}${a.pathname.replace(/\/+$/, "")}`, s = String(t?.get?.("Accept-Language") || "").trim().slice(0, 80), i = r.map((c) => String(c || "").trim()).filter(Boolean).sort();
+    return i.length ? new Request(`https://infuse-list-meta-v4.invalid/${encodeURIComponent(o)}/${encodeURIComponent(e || "-")}/${encodeURIComponent(s || "-")}/${i.map(encodeURIComponent).join(",")}`) : null;
+  } catch {
+    return null;
+  }
+}
+async function fetchDetailBatch(n, e, r, t, a = {}) {
+  if (!n || !Array.isArray(e) || !e.length || !r) return null;
+  const o = ti(n, "/Users/" + encodeURIComponent(r) + "/Items");
+  if (!o) return null;
+  o.searchParams.set("Ids", e.join(",")), o.searchParams.set("Fields", "People,Genres,Studios,Tags,Taglines,Overview,MediaSources,MediaStreams,ProviderIds,ProductionLocations,OriginalTitle,PremiereDate,ProductionYear,OfficialRating,CommunityRating,CriticRating"), o.searchParams.set("EnableImages", "true"), o.searchParams.set("ImageTypeLimit", "8"), o.searchParams.set("EnableImageTypes", "Primary,Backdrop,Logo"), o.searchParams.set("EnableUserData", "false"), o.searchParams.set("Limit", String(e.length));
+  for (const g of ["api_key", "X-Emby-Token"]) {
+    const f = t?.requestUrl?.searchParams?.get?.(g);
+    f && !o.searchParams.has(g) && o.searchParams.set(g, f);
+  }
+  const s = a?.newHeaders instanceof Headers ? new Headers(a.newHeaders) : new Headers(t?.request?.headers || {});
+  s.delete("Range"), s.delete("Content-Length"), s.set("Accept", "application/json");
+  const i = typeof AbortController < "u" ? new AbortController() : null, c = t?.request?.signal, l = () => {
+    try {
+      i?.abort();
+    } catch {
+    }
+  }, u = i ? setTimeout(l, Math.max(500, Number(a.timeoutMs) || 3500)) : null;
+  try {
+    c?.addEventListener?.("abort", l, { once: !0 });
+    const d = await (a.fetch ?? fetch)(o.toString(), { headers: s, ...(i ? { signal: i.signal } : {}) });
+    if (!d.ok) {
+      try {
+        Promise.resolve(d.body?.cancel?.()).catch(() => {
+        });
+      } catch {
+      }
+      return null;
+    }
+    const f = await Re(d, Qs);
+    if (f.exceeded || !f.text) return null;
+    const p = (() => {
+      try {
+        return JSON.parse(f.text);
+      } catch {
+        return null;
+      }
+    })();
+    return Array.isArray(p) ? p : Array.isArray(p?.Items) ? p.Items : null;
+  } catch {
+    return null;
+  } finally {
+    u != null && clearTimeout(u), c?.removeEventListener?.("abort", l);
+  }
+}
+async function fetchDetailRaw(n, e, r, t, a = {}) {
+  if (!n || !e || !r) return null;
+  const o = ti(n, "/Users/" + encodeURIComponent(r) + "/Items/" + encodeURIComponent(e));
+  if (!o) return null;
+  for (const g of ["api_key", "X-Emby-Token"]) {
+    const f = t?.requestUrl?.searchParams?.get?.(g);
+    f && !o.searchParams.has(g) && o.searchParams.set(g, f);
+  }
+  const s = a?.newHeaders instanceof Headers ? new Headers(a.newHeaders) : new Headers(t?.request?.headers || {});
+  s.delete("Range"), s.delete("Content-Length"), s.set("Accept", "application/json");
+  const i = typeof AbortController < "u" ? new AbortController() : null, c = t?.request?.signal, l = () => {
+    try {
+      i?.abort();
+    } catch {
+    }
+  }, u = i ? setTimeout(l, Math.max(500, Number(a.timeoutMs) || 1800)) : null;
+  try {
+    c?.addEventListener?.("abort", l, { once: !0 });
+    const d = await (a.fetch ?? fetch)(o.toString(), { headers: s, ...(i ? { signal: i.signal } : {}) });
+    if (!d.ok) {
+      try {
+        Promise.resolve(d.body?.cancel?.()).catch(() => {
+        });
+      } catch {
+      }
+      return null;
+    }
+    const f = await Re(d, Qs);
+    if (f.exceeded || !f.text) return null;
+    const p = (() => {
+      try {
+        return JSON.parse(f.text);
+      } catch {
+        return null;
+      }
+    })();
+    const m = p && typeof p == "object" && !Array.isArray(p) ? p : null;
+    return m;
+  } catch {
+    return null;
+  } finally {
+    u != null && clearTimeout(u), c?.removeEventListener?.("abort", l);
+  }
+}
+function listMetaNeedsFallback(n, e) {
+  if (!n || typeof n != "object" || Array.isArray(n) || n.schema !== 4) return !0;
+  const r = n.art && typeof n.art == "object" ? n.art : null, t = String(r?.primary || "");
+  if (e?.needPrimary && (!t || /^v[a-z]-\d+$/i.test(t))) return !0;
+  if (n.detailTried) return !1;
+  if (e?.needLogo && !String(r?.logo || "")) return !0;
+  if (e?.needBackdrop && !(Array.isArray(r?.backdrops) && r.backdrops.length)) return !0;
+  if (e?.needPeople && !peopleMetaUsable(n.people)) return !0;
+  if (e?.needOverview && !String(n.overview || "").trim()) return !0;
+  if (e?.needGenres && !(Array.isArray(n.genres) && n.genres.length)) return !0;
+  if (e?.needStudios && !(Array.isArray(n.studios) && n.studios.length)) return !0;
+  if (e?.needTags && !(Array.isArray(n.tags) && n.tags.length)) return !0;
+  if (e?.needMedia && !mediaMetaUsable(n.mediaSource ? [n.mediaSource] : [])) return !0;
+  return !1;
+}
 async function enrichInfuseListArtwork(n, e, r, t = {}) {
-  const items = Array.isArray(n) ? n : Array.isArray(n?.Items) ? n.Items : null;
+  let shape = "none", items = null;
+  Array.isArray(n) ? (shape = "array", items = n) : Array.isArray(n?.Items) ? (shape = "items", items = n.Items) : n && typeof n == "object" && !Array.isArray(n) && /^(movie|series|episode)$/i.test(String(n.Type || "")) && (shape = "single", items = [n]);
   if (!items || !items.length) return { payload: n, changed: !1 };
-  const o = r?.activeTargetBase;
+  const o = r?.activeTargetBase || e?.activeTargetBase;
   if (!o) return { payload: n, changed: !1 };
-  const isResume = /\/items\/resume\/?$/i.test(String(e?.proxyPath || e?.requestUrl?.pathname || ""));
-  const targets = [];
-  for (let i = 0; i < items.length; i++) {
-    const it = items[i];
-    if (!it || typeof it != "object" || Array.isArray(it)) continue;
-    const itType = String(it.Type || "").trim().toLowerCase();
-    if (itType === "episode") {
-      if (!isResume || Number(it.RunTimeTicks) > 0) continue;
-      targets.push({ idx: i, id: String(it.Id || "").trim(), name: String(it.Name || "").slice(0, 60), year: null, noRating: !0 });
+  const s = /\/items\/resume\/?$/i.test(String(e?.proxyPath || e?.requestUrl?.pathname || "")), i = [], c = /* @__PURE__ */ new Set();
+  for (let g = 0; g < items.length; g++) {
+    const f = items[g];
+    if (!f || typeof f != "object" || Array.isArray(f)) continue;
+    const h = String(f.Type || "").trim().toLowerCase(), y = String(f.Id || "").trim();
+    if (h === "episode") {
+      if (!s || Number(f.RunTimeTicks) > 0 || !y || c.has(y)) continue;
+      c.add(y), i.push({ idx: g, id: y, name: String(f.Name || "").slice(0, 60), year: null, noRating: !0, needMedia: !0 });
       continue;
     }
-    if (itType !== "series" && itType !== "movie") continue;
-    const id = String(it.Id || "").trim();
-    if (!/^vl-\d+$/i.test(id)) continue;
-    const img = it.ImageTags && typeof it.ImageTags == "object" && !Array.isArray(it.ImageTags) ? it.ImageTags : {};
-    const hasLogo = !!img.Logo;
-    const hasBackdrop = Array.isArray(it.BackdropImageTags) && it.BackdropImageTags.length > 0;
-    const hasPeople = Array.isArray(it.People) && it.People.length > 0;
-    const hasOverview = !!(it.Overview && String(it.Overview).trim());
-    const primaryNeedsFix = /^v[a-z]-\d+$/i.test(String(img.Primary || "")); if (!hasLogo || !hasBackdrop || primaryNeedsFix || !hasPeople || !hasOverview) targets.push({ idx: i, id, name: String(it.Name || "").slice(0, 60), year: Number(it.ProductionYear) || null });
+    if (h !== "series" && h !== "movie" || !/^vl-\d+$/i.test(y) || c.has(y)) continue;
+    const v = f.ImageTags && typeof f.ImageTags == "object" && !Array.isArray(f.ImageTags) ? f.ImageTags : {}, b = !!v.Logo, P = Array.isArray(f.BackdropImageTags) && f.BackdropImageTags.length > 0, S = peopleMetaUsable(f.People), O = !!String(f.Overview || "").trim(), I = cleanMetaStrings([...(Array.isArray(f.Genres) ? f.Genres : []), ...(Array.isArray(f.GenreItems) ? f.GenreItems : [])]).length > 0, k = cleanMetaPairs(f.Studios, 1).length > 0, M = cleanMetaStrings([...(Array.isArray(f.Tags) ? f.Tags : []), ...(Array.isArray(f.TagItems) ? f.TagItems : [])], 1).length > 0, R = mediaMetaUsable(f.MediaSources), T = /^v[a-z]-\d+$/i.test(String(v.Primary || ""));
+    if (!b || !P || T || !S || !O || !I || !k || !M || !R || shape === "single") c.add(y), i.push({ idx: g, id: y, name: String(f.Name || "").slice(0, 60), year: Number(f.ProductionYear) || null, needPrimary: T || !String(v.Primary || ""), needLogo: !b, needBackdrop: !P, needPeople: !S, needOverview: !O, needGenres: !I, needStudios: !k, needTags: !M, needMedia: !R });
   }
-  targets.length > 45 && (targets.length = 45);
-  if (!targets.length) return { payload: n, changed: !1 };
-  const s = Wl(t);
-  const userId = (() => {
-    const p = String(e?.proxyPath || e?.requestUrl?.pathname || "");
-    const m = /\/Users\/([^/?]+)/i.exec(p);
-    return m ? m[1] : String(e?.requestUrl?.searchParams?.get("UserId") || "").trim();
+  if (!i.length) return { payload: n, changed: !1 };
+  i.length > 45 && (i.length = 45);
+  const l = Wl(t), u = (() => {
+    const g = String(e?.proxyPath || e?.requestUrl?.pathname || ""), f = /\/Users\/([^/?]+)/i.exec(g);
+    return f ? f[1] : String(e?.requestUrl?.searchParams?.get("UserId") || "").trim();
   })();
-  const results = [];
+  if (!u) return { payload: n, changed: !1 };
+  const m = [], deadline = Date.now() + 6500;
   let cursor = 0;
-  const deadline = Date.now() + 6500;
-  const W = Math.min(6, targets.length);
   const workers = [];
-  for (let w = 0; w < W; w++) workers.push((async () => {
-    while (cursor < targets.length) {
-      if (Date.now() > deadline) break;
-      const tg = targets[cursor++];
-      let meta = null, art = null;
-      try {
-        const km = es(o, tg.id, "meta2");
-        meta = km ? await ts(s, km) : null;
-        if (!meta) {
-          const d = await fetchDetailRaw(o, tg.id, userId, e, t);
-          meta = d ? extractListMeta(d, tg.id) : null;
-          if (meta) {
-            !tg.noRating && meta.communityRating == null && !meta.ratingTried && (meta.communityRating = await fetchBgmRating(tg.name, tg.year), meta.ratingTried = !0);
-            km && await Cn(s, km, meta);
-          }
-        } else if (!tg.noRating && meta.communityRating == null && !meta.ratingTried) {
-          meta.communityRating = await fetchBgmRating(tg.name, tg.year);
-          meta.ratingTried = !0;
-          km && await Cn(s, km, meta);
-        }
-        art = meta && meta.art || null;
-        if (!art) {
-          const k = es(o, tg.id, "artwork");
-          art = k ? await ts(s, k) : null;
-          if (!art) {
-            art = await Vl(o, tg.id, userId, e, t);
-            art && k && await Cn(s, k, art);
-          }
-        }
-      } catch {
-        meta = null; art = null;
+  for (let g = 0; g < Math.min(6, i.length); g++) workers.push((async () => {
+    while (cursor < i.length && Date.now() < deadline) {
+      const f = i[cursor++], h = es(o, f.id, "meta4");
+      let y = l && h ? await ts(l, h, 2097152) : null, v = !1;
+      if (listMetaNeedsFallback(y, f) && Date.now() < deadline) {
+        const b = await fetchDetailRaw(o, f.id, u, e, { ...t, timeoutMs: Math.max(500, deadline - Date.now()) }), P = extractListMeta(b, f.id, !0);
+        P && (y = P, listMetaNeedsFallback(P, f) || (v = !0));
       }
-      results.push({ ...tg, art, meta });
+      m.push({ ...f, meta: y && typeof y == "object" && y.schema === 4 ? y : null, key: h, dirty: v });
     }
   })());
   await Promise.all(workers);
+  const ratingJobs = Date.now() < deadline ? m.filter((g) => !g.noRating && g.meta && g.meta.communityRating == null && !g.meta.ratingTried).slice(0, 2) : [];
+  await Promise.all(ratingJobs.map(async (g) => {
+    const f = typeof AbortController < "u" ? new AbortController() : null, h = f ? setTimeout(() => f.abort(), 1200) : null;
+    try {
+      g.meta.communityRating = await fetchBgmRating(g.name, g.year, f?.signal || null);
+    } catch {
+      g.meta.communityRating = null;
+    } finally {
+      h != null && clearTimeout(h), g.meta.ratingTried = !0, g.dirty = !0;
+    }
+  }));
+  if (l) await Promise.all(m.filter((g) => g.dirty && g.key && g.meta).map((g) => Cn(l, g.key, g.meta)));
   let changed = !1;
   const clone = items.slice();
-  for (const x of results) {
+  for (const x of m) {
     const it = clone[x.idx];
-    if (!it) continue;
-    const meta = x.meta || null, art = x.art || (meta && meta.art) || null;
-    const adds = {};
-    if (meta) {
-      if (!String(it.Overview || "").trim() && meta.overview) adds.Overview = meta.overview;
-      if (!(Array.isArray(it.People) && it.People.length) && Array.isArray(meta.people) && meta.people.length) adds.People = meta.people;
-      if (!it.RunTimeTicks && meta.runTimeTicks) adds.RunTimeTicks = meta.runTimeTicks;
-      if (meta.premiereDate && !it.PremiereDate) adds.PremiereDate = meta.premiereDate;
-      if (meta.officialRating && !it.OfficialRating) adds.OfficialRating = meta.officialRating;
-      if (!x.noRating && meta.communityRating != null && !(Number(it.CommunityRating) > 0)) adds.CommunityRating = meta.communityRating;
-      if (meta.mediaSource && !(Array.isArray(it.MediaSources) && it.MediaSources.length)) adds.MediaSources = [meta.mediaSource];
-    }
-    const hasAdds = Object.keys(adds).length > 0;
-    if (!art) {
-      if (hasAdds) {
-        clone[x.idx] = { ...it, ...adds };
-        changed = !0;
-      }
-      continue;
-    }
-    const curImg = it.ImageTags && typeof it.ImageTags == "object" && !Array.isArray(it.ImageTags) ? it.ImageTags : {};
-    const curBd = Array.isArray(it.BackdropImageTags) ? it.BackdropImageTags : [];
-    const curPrimary = curImg.Primary;
-    const wantPrimary = !!art.primary && (!curPrimary || /^v[a-z]-\d+$/i.test(String(curPrimary || "")));
-    const wantLogo = !!art.logo && !curImg.Logo;
-    const wantBd = Array.isArray(art.backdrops) && art.backdrops.length > 0 && !curBd.length;
-    if (!wantPrimary && !wantLogo && !wantBd) {
-      if (hasAdds) {
-        clone[x.idx] = { ...it, ...adds };
-        changed = !0;
-      }
-      continue;
-    }
+    if (!it || !x.meta) continue;
+    const meta = x.meta, art = meta.art || null, adds = {};
+    if (!String(it.Overview || "").trim() && meta.overview) adds.Overview = meta.overview;
+    if (Array.isArray(meta.people) && meta.people.length && peopleMetaScore(meta.people) > peopleMetaScore(it.People)) adds.People = meta.people;
+    if (!(Array.isArray(it.Genres) && it.Genres.length) && meta.genres?.length) adds.Genres = meta.genres;
+    if (!(Array.isArray(it.GenreItems) && it.GenreItems.length) && meta.genreItems?.length) adds.GenreItems = meta.genreItems;
+    if (!(Array.isArray(it.Tags) && it.Tags.length) && meta.tags?.length) adds.Tags = meta.tags;
+    if (!(Array.isArray(it.TagItems) && it.TagItems.length) && meta.tagItems?.length) adds.TagItems = meta.tagItems;
+    if (!(Array.isArray(it.Studios) && it.Studios.length) && meta.studios?.length) adds.Studios = meta.studios;
+    if (!(Array.isArray(it.Taglines) && it.Taglines.length) && meta.taglines?.length) adds.Taglines = meta.taglines;
+    if (!(Array.isArray(it.ProductionLocations) && it.ProductionLocations.length) && meta.productionLocations?.length) adds.ProductionLocations = meta.productionLocations;
+    if (!String(it.OriginalTitle || "").trim() && meta.originalTitle) adds.OriginalTitle = meta.originalTitle;
+    if ((!it.ProviderIds || typeof it.ProviderIds != "object" || !Object.keys(it.ProviderIds).length) && meta.providerIds) adds.ProviderIds = meta.providerIds;
+    if (!it.RunTimeTicks && meta.runTimeTicks) adds.RunTimeTicks = meta.runTimeTicks;
+    if (!it.ProductionYear && meta.productionYear) adds.ProductionYear = meta.productionYear;
+    if (meta.premiereDate && !it.PremiereDate) adds.PremiereDate = meta.premiereDate;
+    if (meta.officialRating && !it.OfficialRating) adds.OfficialRating = meta.officialRating;
+    if (!x.noRating && meta.communityRating != null && !(Number(it.CommunityRating) > 0)) adds.CommunityRating = meta.communityRating;
+    if (meta.criticRating != null && !(Number(it.CriticRating) > 0)) adds.CriticRating = meta.criticRating;
+    if (meta.mediaSource && mediaMetaUsable([meta.mediaSource]) && (!mediaMetaUsable(it.MediaSources) || mediaMetaScore([meta.mediaSource]) > mediaMetaScore(it.MediaSources))) adds.MediaSources = [meta.mediaSource];
+    const curImg = it.ImageTags && typeof it.ImageTags == "object" && !Array.isArray(it.ImageTags) ? it.ImageTags : {}, curBd = Array.isArray(it.BackdropImageTags) ? it.BackdropImageTags : [], curPrimary = curImg.Primary, wantPrimary = !!art?.primary && (!curPrimary || /^v[a-z]-\d+$/i.test(String(curPrimary || ""))), wantLogo = !!art?.logo && !curImg.Logo, wantBd = Array.isArray(art?.backdrops) && art.backdrops.length > 0 && !curBd.length, hasAdds = Object.keys(adds).length > 0;
+    if (!hasAdds && !wantPrimary && !wantLogo && !wantBd) continue;
     const nImg = { ...curImg };
-    wantPrimary && (nImg.Primary = art.primary);
-    wantLogo && (nImg.Logo = art.logo);
-    clone[x.idx] = {
+    wantPrimary && (nImg.Primary = art.primary), wantLogo && (nImg.Logo = art.logo), clone[x.idx] = {
       ...it,
       ...adds,
-      ImageTags: nImg,
+      ...(wantPrimary || wantLogo ? { ImageTags: nImg } : {}),
       ...(wantPrimary && String(it.Type || "").trim().toLowerCase() === "series" ? { SeriesPrimaryImageTag: art.primary } : {}),
       ...(wantBd ? { BackdropImageTags: art.backdrops } : {})
-    };
-    changed = !0;
+    }, changed = !0;
   }
   if (!changed) return { payload: n, changed: !1 };
-  return { payload: Array.isArray(n) ? clone : { ...n, Items: clone }, changed: !0 };
+  return { payload: shape === "array" ? clone : shape === "single" ? clone[0] : { ...n, Items: clone }, changed: !0 };
 }
 async function ql(n, e, r, t = {}) {
   const a = zl(e?.proxyPath || e?.requestUrl?.pathname);
