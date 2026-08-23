@@ -76,6 +76,8 @@ Workers → 你的脚本 → Settings → Domains → 绑定域名（如 `emby.e
 
 `direct` 仍使用本 Worker 作为 Emby 接入地址；只是不让媒体字节流经过 Worker。对于能“跑满带宽”的同类反代，这通常正是差异所在：外部 302/307 被交给客户端，而非由 Worker 继续拉取再转发。
 
+Infuse 的 `vl-*` / `ve-*` 虚拟媒体会先读取一次轻量 `PlaybackInfo`，以兼容上游的 `/emya/video` 播放地址；开启 `direct` 后，该地址同样会以 `307` 交给客户端，不会重新落回 Worker 中转。
+
 如果上游或网盘地址仅允许 Worker IP 访问，或客户端的鉴权无法随重定向传递，请改回：
 
 ```json

@@ -10,7 +10,7 @@ Cloudflare Worker API 部署脚本（Python，无 Node 依赖）
   2. 通过自定义域 zzzj.de5.net 找到对应的 worker 脚本名
   3. 备份当前线上脚本到 桌面\worker-backup-<时间>.js
   4. 从当前活动 Worker 版本读取 compatibility / bindings
-  5. 上传 worker.js（module 格式，保留现有 bindings）
+  5. 上传 worker.js（module 格式，原样附带现有 bindings）
   6. 探测线上验证 v5 生效
 """
 import sys, os, json, time, urllib.request, urllib.error, ssl
@@ -104,7 +104,7 @@ def main():
     else:
         print('== 警告: 备份失败 (HTTP %d, %d B)，继续部署' % (st, len(backup) if isinstance(backup, bytes) else -1))
 
-    # 4. 从当前活动版本读取资源。/settings 不会返回版本绑定，不能用于 keep_bindings。
+    # 4. 从当前活动版本读取资源。/settings 不会返回版本绑定，不能用于上传元数据。
     compat_date = ''
     compat_flags = []
     bindings = []
@@ -130,12 +130,11 @@ def main():
         print('== DRY-RUN 结束（未上传）==')
         return
 
-    # 5. 上传 (module multipart, keep_bindings)
+    # 5. 上传（module multipart；bindings 必须完整写入 metadata，不能只传类型）
     src = open(WORKER_FILE, 'rb').read()
-    keep_types = sorted(set(b.get('type') for b in bindings if b.get('type') and b.get('type') != 'assets')) or None
     metadata = {
         'main_module': 'worker.js',
-        'keep_bindings': keep_types,
+        'bindings': bindings,
     }
     if compat_date:
         metadata['compatibility_date'] = compat_date
