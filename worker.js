@@ -16046,7 +16046,7 @@ function $g(n = {}, e = {}) {
           const _sm = String((u.node && (u.node.mainVideoStreamMode ?? u.node.wangpanDirectMode ?? u.node.wangpanMode)) || "").trim().toLowerCase();
           if (_sm === "direct" || _sm === "302" || _sm === "redirect") {
             const _org = new URL(String(p[0]?.targetUrl || "https://invalid.local/")).origin;
-            return new Response(null, { status: 302, headers: { Location: _org + y.upstreamPath + y.search, "Cache-Control": "no-store" } });
+            return new Response(null, { status: 302, headers: { Location: _org + (/^\/emby\//i.test(y.upstreamPath) ? y.upstreamPath : "/emby" + y.upstreamPath) + y.search, "Cache-Control": "no-store" } });
           }
           u.proxyPath = y.proxyPath, u.requestUrl = new URL(u.requestUrl.toString()), u.requestUrl.pathname = y.proxyPath, u.requestUrl.search = y.search, u.forceWorkerProxy = !0, u.infuseStreamRewrite = "playback_info";
         }
