@@ -682,6 +682,8 @@ function Bl(n) {
   }
   const o = n.ImageTags && typeof n.ImageTags == "object" && !Array.isArray(n.ImageTags) ? n.ImageTags : {}, s = Object.fromEntries(Object.entries(o).map(([c, l]) => [c, Mr(l)]));
   Object.keys(s).some((c) => s[c] !== o[c]) && a("ImageTags", s);
+  const primaryTag = String(s.Primary || "").trim();
+  !String(n.Etag || "").trim() && /^[0-9a-f]{32}$/i.test(primaryTag) && a("Etag", primaryTag.toLowerCase());
   const i = (c) => {
     const l = n[c];
     if (typeof l == "string") {
@@ -1209,6 +1211,7 @@ async function enrichInfuseListArtwork(n, e, r, t = {}) {
       ...it,
       ...adds,
       ...(wantPrimary || wantLogo ? { ImageTags: nImg } : {}),
+      ...(wantPrimary && !String(it.Etag || "").trim() && /^[0-9a-f]{32}$/i.test(String(art.primary || "").trim()) ? { Etag: String(art.primary).trim().toLowerCase() } : {}),
       ...(wantPrimary && String(it.Type || "").trim().toLowerCase() === "series" ? { SeriesPrimaryImageTag: art.primary } : {}),
       ...(wantBd ? { BackdropImageTags: art.backdrops } : {})
     }, changed = !0;
@@ -15641,7 +15644,7 @@ function kg(n = {}, e = {}) {
           headers: T,
           redirect: "manual"
         };
-        return s.isMetadataCacheable && (v.cache = "no-store"), D !== "GET" && D !== "HEAD" && (E === "buffered" && w !== null && w !== void 0 ? v.body = w.slice(0) : E === "stream" && (v.body = w)), v;
+        return D !== "GET" && D !== "HEAD" && (E === "buffered" && w !== null && w !== void 0 ? v.body = w.slice(0) : E === "stream" && (v.body = w)), v;
       };
     }
   };
@@ -16500,7 +16503,6 @@ function zg(n = {}, e = {}) {
             try {
               const T = await e.runMetadataPrewarmSingleFlight(R, async () => {
                 const L = await i(A.upstreamUrl, { method: "GET" });
-                L.cache = "no-store";
                 const D = new Headers(L.headers);
                 D.delete("Range"), D.delete("If-Modified-Since"), D.delete("If-None-Match"), D.set("X-Metadata-Prewarm", "1"), L.headers = D;
                 const E = new AbortController();
