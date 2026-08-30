@@ -1,0 +1,31 @@
+name: Release checks
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  stable-worker:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+      - name: Check Worker syntax
+        run: node --check worker.js
+      - name: Run stable release tests
+        run: >-
+          node --test
+          tests/infuse-stream-rewrite-route-cache.test.mjs
+          tests/items-latest-microcache.test.mjs
+      - name: Check deployment helper syntax
+        run: python -m py_compile cf_deploy.py
+      - name: Test deployment backup safety
+        run: python -m unittest tests/test_cf_deploy.py

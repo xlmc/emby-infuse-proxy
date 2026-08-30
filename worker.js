@@ -488,11 +488,136 @@ function Gt(n = null) {
   if (r.some((t) => /(?:^|\s|-)infuse(?:[\s/-]|$)/i.test(t))) return !0;
   return /(?:^|[,\s])Client\s*=\s*"?Infuse(?:"|[,\s]|$)/i.test(String(e?.get?.("X-Emby-Authorization") || e?.get?.("Authorization") || ""));
 }
+var INFUSE_STREAM_REWRITE_CACHE_TTL_SEC = 1800, INFUSE_STREAM_REWRITE_CACHE_TTL_MS = INFUSE_STREAM_REWRITE_CACHE_TTL_SEC * 1e3, INFUSE_STREAM_REWRITE_CACHE_MAX = 256;
+async function buildInfuseStreamRewriteAuthSignature(n) {
+  const e = n instanceof Request ? new URL(n.url) : null, r = n instanceof Request ? n.headers : new Headers(), t = String(e?.searchParams.get("api_key") || e?.searchParams.get("X-Emby-Token") || e?.searchParams.get("X-MediaBrowser-Token") || qo(r).token || "").trim(), a = Vo(Qe(r, "Cookie"), fn);
+  const o = t ? `token:${t}` : [
+    Qe(r, "Authorization"),
+    Qe(r, "X-Emby-Authorization"),
+    Qe(r, "X-MediaBrowser-Authorization"),
+    a
+  ].map((s) => String(s || "").trim()).filter(Boolean).join("\n");
+  if (!o) return "";
+  const s = await $n().digest("SHA-256", new TextEncoder().encode(o));
+  return [...new Uint8Array(s)].map((i) => i.toString(16).padStart(2, "0")).join("");
+}
+function buildInfuseStreamRewritePartition(n, e) {
+  const r = String(e || "").trim(), t = String(n?.nodeDerivedCacheRevision || n?.nodeCacheRevision || "").trim();
+  return r && t ? `${r}@${encodeURIComponent(t)}` : r;
+}
+function buildInfuseStreamRewriteCacheKey(n, e, r, t) {
+  return [String(n || "").trim().toLowerCase(), String(e || "").trim(), String(r || "*").trim() || "*", String(t || "").trim()].join("|");
+}
+function cleanupInfuseStreamRewriteCache(n = H()) {
+  const e = ne.InfuseStreamRewriteRouteCache;
+  if (!(e instanceof Map)) return;
+  for (const [r, t] of e) (Number(t?.expiresAt) || 0) <= n && e.delete(r);
+  for (; e.size > INFUSE_STREAM_REWRITE_CACHE_MAX; ) e.delete(e.keys().next().value);
+}
+function resolveInfuseEmyaRoute(n, e) {
+  const r = String(n || "").trim();
+  if (!r || !(e instanceof URL)) return null;
+  let t;
+  try {
+    t = new URL(r, e.origin);
+  } catch {
+    return null;
+  }
+  return t.origin === e.origin && /^\/(?:emby\/)?emya\/video\/?$/i.test(t.pathname) ? {
+    proxyPath: "/emya/video",
+    search: t.search,
+    upstreamPath: t.pathname
+  } : null;
+}
+function setInfuseStreamRewriteMemoryCache(n, e, r, t, a) {
+  const o = ne.InfuseStreamRewriteRouteCache;
+  if (!(o instanceof Map) || !n || !e || !t) return;
+  const s = buildInfuseStreamRewriteCacheKey(n, e, r, t);
+  o.delete(s), o.set(s, {
+    route: a ? { ...a } : null,
+    expiresAt: H() + INFUSE_STREAM_REWRITE_CACHE_TTL_MS
+  }), cleanupInfuseStreamRewriteCache();
+}
+function getInfuseStreamRewriteMemoryCache(n, e, r, t) {
+  cleanupInfuseStreamRewriteCache();
+  const a = ne.InfuseStreamRewriteRouteCache;
+  if (!(a instanceof Map) || !n || !e || !t) return { found: !1, route: null };
+  const o = buildInfuseStreamRewriteCacheKey(n, e, r, t), s = r === "*" ? "" : buildInfuseStreamRewriteCacheKey(n, e, "*", t), i = a.get(o) || s && a.get(s), c = a.has(o) ? o : s && a.has(s) ? s : "";
+  if (i && c) return a.delete(c), a.set(c, i), { found: !0, route: i.route ? { ...i.route } : null };
+  const l = `${String(n || "").trim().toLowerCase()}|${String(e || "").trim()}|`;
+  let u = !1, d = !1;
+  for (const f of a.keys()) {
+    const m = String(f || "");
+    if (!m.startsWith(l)) continue;
+    const p = m.slice(l.length).lastIndexOf("|"), g = p >= 0 ? m.slice(l.length + p + 1) : "", h = p >= 0 ? m.slice(l.length, l.length + p) : "";
+    g === String(t) ? d = !0 : (h === String(r) || h === "*") && (u = !0);
+  }
+  return { found: !1, route: null, missReason: u ? "auth" : d ? "media" : "empty" };
+}
+async function buildInfuseStreamRewriteEdgeCacheRequest(n, e, r, t) {
+  const a = buildInfuseStreamRewriteCacheKey(n, e, r, t), o = await $n().digest("SHA-256", new TextEncoder().encode(a)), s = [...new Uint8Array(o)].map((i) => i.toString(16).padStart(2, "0")).join("");
+  return new Request(`https://infuse-route-cache.invalid/v1/${s}`, { method: "GET" });
+}
+async function putInfuseStreamRewriteCache(n, e, r, t, a) {
+  setInfuseStreamRewriteMemoryCache(n, e, r, t, a);
+  const o = dr();
+  if (!o) return "memory";
+  try {
+    const s = await buildInfuseStreamRewriteEdgeCacheRequest(n, e, r, t), i = JSON.stringify({ v: 1, route: a ? { ...a } : null });
+    return await o.put(s, new Response(i, { headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${INFUSE_STREAM_REWRITE_CACHE_TTL_SEC}` } })), "edge";
+  } catch {
+    return "memory";
+  }
+}
+async function getInfuseStreamRewriteCache(n, e, r, t) {
+  const a = getInfuseStreamRewriteMemoryCache(n, e, r, t);
+  if (a.found) return { ...a, source: "memory" };
+  const o = dr();
+  if (!o) return a;
+  const s = [String(r || "*").trim() || "*"];
+  s[0] !== "*" && s.push("*");
+  for (const i of s) try {
+    const c = await buildInfuseStreamRewriteEdgeCacheRequest(n, e, i, t), l = await o.match(c);
+    if (!l || l.status !== 200) continue;
+    const u = await l.json(), d = u?.v === 1 && (u.route === null || u.route && typeof u.route == "object") ? u.route : void 0;
+    if (d === void 0) continue;
+    const f = d === null ? null : String(d.proxyPath || "") === "/emya/video" && /^\/(?:emby\/)?emya\/video\/?$/i.test(String(d.upstreamPath || "")) ? { proxyPath: "/emya/video", search: String(d.search || ""), upstreamPath: String(d.upstreamPath || "") } : void 0;
+    if (f === void 0) continue;
+    return setInfuseStreamRewriteMemoryCache(n, e, i, t, f), { found: !0, route: f, source: "edge" };
+  } catch {
+  }
+  return a;
+}
+async function indexInfuseStreamRewriteRoutes(n, e, r) {
+  if (!Gt(n?.request) || !e || typeof e != "object") return n && (n.infuseStreamRewriteCacheIndexState = "skip_request"), !1;
+  const t = /^\/(?:emby\/)?Items\/((?:ve|vl)-\d+)\/PlaybackInfo\/?$/i.exec(String(n?.proxyPath || n?.requestUrl?.pathname || ""));
+  if (!t) return n.infuseStreamRewriteCacheIndexState = "skip_path", !1;
+  let a;
+  try {
+    a = r instanceof URL ? r : new URL(String(r || ""));
+  } catch {
+    return n.infuseStreamRewriteCacheIndexState = "skip_target", !1;
+  }
+  const o = buildInfuseStreamRewritePartition(n, await buildInfuseStreamRewriteAuthSignature(n.request));
+  if (!o) return n.infuseStreamRewriteCacheIndexState = "skip_auth", !1;
+  const s = Array.isArray(e.MediaSources) ? e.MediaSources : [], i = [], c = [];
+  for (const l of s) {
+    const u = String(l?.Id || "").trim(), d = resolveInfuseEmyaRoute(l?.DirectStreamUrl, a);
+    i.push(d), u && c.push(putInfuseStreamRewriteCache(n?.nodeName, t[1], u, o, d));
+  }
+  s.length === 1 ? c.push(putInfuseStreamRewriteCache(n?.nodeName, t[1], "*", o, i[0])) : s.length > 1 && i.every((l) => !l) && c.push(putInfuseStreamRewriteCache(n?.nodeName, t[1], "*", o, null));
+  if (!c.length) return n.infuseStreamRewriteCacheIndexState = "empty_sources", !1;
+  const l = await Promise.all(c);
+  return n.infuseStreamRewriteCacheIndexState = l.includes("edge") ? `edge_${c.length}` : `memory_${c.length}`, !0;
+}
 async function Ol(n, e, r = {}) {
   const t = n?.request;
   if (!Gt(t) || !(e instanceof URL)) return null;
   const a = String(n?.proxyPath || n?.requestUrl?.pathname || ""), o = /^\/(?:emby\/)?Videos\/((?:ve|vl)-\d+)\/stream\/?$/i.exec(a);
   if (!o) return null;
+  const f = n?.requestUrl instanceof URL ? n.requestUrl : new URL(t?.url || "https://invalid.local/"), m = String(f.searchParams.get("MediaSourceId") || "").trim(), p = buildInfuseStreamRewritePartition(n, await buildInfuseStreamRewriteAuthSignature(t)), g = await getInfuseStreamRewriteCache(n?.nodeName, o[1], m || "*", p);
+  if (g.found) return n.infuseStreamRewriteCacheState = `${g.source === "edge" ? "hit_edge" : "hit"}_${g.route ? "emya" : "standard"}`, g.route;
+  n.infuseStreamRewriteCacheState = `miss_${g.missReason || "fetch"}_fetch`;
   const s = ti(e, `/Items/${encodeURIComponent(o[1])}/PlaybackInfo`);
   if (!s) return null;
   const i = new Headers(r.headers || t?.headers || {});
@@ -518,19 +643,8 @@ async function Ol(n, e, r = {}) {
   } catch {
     return null;
   }
-  const d = Array.isArray(u?.MediaSources) ? u.MediaSources : [], f = n?.requestUrl instanceof URL ? n.requestUrl : new URL(t?.url || "https://invalid.local/"), m = String(f.searchParams.get("MediaSourceId") || "").trim(), p = d.find((y) => m && String(y?.Id || "").trim() === m) || d.find((y) => String(y?.DirectStreamUrl || "").trim()), g = String(p?.DirectStreamUrl || "").trim();
-  if (!g) return null;
-  let h;
-  try {
-    h = new URL(g, e.origin);
-  } catch {
-    return null;
-  }
-  return h.origin !== e.origin || !/^\/(?:emby\/)?emya\/video\/?$/i.test(h.pathname) ? null : {
-    proxyPath: "/emya/video",
-    search: h.search,
-    upstreamPath: h.pathname
-  };
+  const d = Array.isArray(u?.MediaSources) ? u.MediaSources : [], h = d.find((y) => m && String(y?.Id || "").trim() === m) || d.find((y) => String(y?.DirectStreamUrl || "").trim()), v = resolveInfuseEmyaRoute(h?.DirectStreamUrl, e);
+  return p && await putInfuseStreamRewriteCache(n?.nodeName, o[1], m || "*", p, v), v;
 }
 function vl(n = "") {
   return /\/system\/info(?:\/public)?\/?$/i.test(String(n || ""));
@@ -1910,8 +2024,10 @@ var gt = on(su), _e = (n = null) => gt.get(n), rr = Al(), Ga = bl(), zn = El(), 
   ProxyFailoverStateCache: /* @__PURE__ */ new Map(),
   CryptoKeyCache: /* @__PURE__ */ new Map(),
   PlaybackInfoResponseCache: /* @__PURE__ */ new Map(),
+  InfuseStreamRewriteRouteCache: /* @__PURE__ */ new Map(),
   PlaybackProgressRelay: /* @__PURE__ */ new Map(),
   MetadataPrewarmTasks: /* @__PURE__ */ new Map(),
+  ItemsLatestSingleFlightTasks: /* @__PURE__ */ new Map(),
   DashboardMonthlyTrafficCache: /* @__PURE__ */ new Map(),
   SingleFlightTasks: /* @__PURE__ */ new Map(),
   AdminRemoteShellCacheMutationChains: /* @__PURE__ */ new Map(),
@@ -12108,6 +12224,17 @@ async function rl(n) {
   const e = tl(n), r = await $n().digest("SHA-256", new TextEncoder().encode(ee(e)));
   return [...new Uint8Array(r)].map((t) => t.toString(16).padStart(2, "0")).join("");
 }
+async function buildItemsLatestMicrocacheKey(n = {}) {
+  const e = ee({
+    nodeName: String(n.nodeName || "").trim().toLowerCase(),
+    nodeRevision: String(n.nodeRevision || "").trim(),
+    proxyPath: String(n.proxyPath || "").trim(),
+    search: String(n.search || ""),
+    identity: String(n.identity || "").trim(),
+    corsOrigin: String(n.corsOrigin || "*").trim()
+  }), r = await $n().digest("SHA-256", new TextEncoder().encode(e)), t = [...new Uint8Array(r)].map((a) => a.toString(16).padStart(2, "0")).join(""), a = new URL(String(n.origin || "https://cache.invalid")).origin;
+  return new Request(`${a}/__cf_worker_internal/items-latest-v1/${t}`, { method: "GET" });
+}
 async function ng(n, e) {
   return await rl(new Request(e instanceof URL ? e.toString() : String(e || ""), { headers: n.headers }));
 }
@@ -12188,6 +12315,11 @@ function ol(n = []) {
   if (r instanceof Map) for (const [t, a] of r.entries()) {
     const o = String(a?.nodeName || "").trim().toLowerCase();
     e.has(o) && r.delete(t);
+  }
+  const t = ne.InfuseStreamRewriteRouteCache;
+  if (t instanceof Map) for (const a of t.keys()) {
+    const o = String(a || "").split("|", 1)[0];
+    e.has(o) && t.delete(a);
   }
 }
 function sl(n = []) {
@@ -15454,6 +15586,74 @@ async function Ug(n, e = null) {
 }
 function kg(n = {}, e = {}) {
   return {
+    async tryServeItemsLatestCache(r, t = "hit") {
+      if (r?.requestTraits?.isItemsLatestRequest !== !0 || !r.itemsLatestCache || !r.itemsLatestCacheKey) return null;
+      try {
+        const a = await r.itemsLatestCache.match(r.itemsLatestCacheKey);
+        if (!a || a.status !== 200) return null;
+        const o = e.buildProxyResponseHeaders(a, r.request, r.dynamicCors, r.finalOrigin, r.requestTraits, {
+          enableH3: r.enableH3,
+          forceH1: r.forceH1,
+          imageCacheMaxAge: r.imageCacheMaxAge
+        });
+        return o.set("Cache-Control", "private, max-age=0"), o.set("X-Infuse-Latest-Cache", t), e.recordAccessLog(r, {
+          statusCode: a.status,
+          category: "api",
+          errorDetail: `ItemsLatestCache=${t}`,
+          outboundColo: ""
+        }), new Response(a.body, {
+          status: a.status,
+          statusText: a.statusText,
+          headers: o
+        });
+      } catch {
+        return null;
+      }
+    },
+    async storeItemsLatestCache(r, t) {
+      if (r?.requestTraits?.isItemsLatestRequest !== !0 || !r.itemsLatestCache || !r.itemsLatestCacheKey || !t || t.status !== 200 || !go(t.headers.get("Content-Type"))) return !1;
+      try {
+        const a = new Headers(t.headers);
+        return a.delete("Set-Cookie"), a.delete("Vary"), a.set("Cache-Control", "public, max-age=5"), await r.itemsLatestCache.put(r.itemsLatestCacheKey, new Response(t.body, {
+          status: t.status,
+          statusText: t.statusText,
+          headers: a
+        })), !0;
+      } catch {
+        return !1;
+      }
+    },
+    async runItemsLatestSingleFlight(r, t) {
+      if (typeof t != "function") throw new TypeError("Items/Latest single-flight requires a request factory");
+      if (r?.requestTraits?.isItemsLatestRequest !== !0 || !r.itemsLatestCache || !r.itemsLatestCacheKey) return await t();
+      const a = ne.ItemsLatestSingleFlightTasks, o = r.itemsLatestCacheKey.url, s = a.get(o);
+      if (s) {
+        try {
+          await s;
+          const c = await e.tryServeItemsLatestCache(r, "singleflight_join");
+          if (c) return c;
+        } catch {
+        }
+        return await t();
+      }
+      if (a.size >= 64) return await t();
+      const i = (async () => {
+        const c = await e.tryServeItemsLatestCache(r, "race_hit");
+        if (c) return c;
+        const l = await t();
+        if (l?.status === 200) try {
+          await e.storeItemsLatestCache(r, l.clone());
+        } catch {
+        }
+        return l;
+      })();
+      a.set(o, i);
+      try {
+        return await i;
+      } finally {
+        a.get(o) === i && a.delete(o);
+      }
+    },
     async tryServeMetadataCache(r) {
       if (!r.metadataCache || !r.metadataCacheKey) return null;
       try {
@@ -15496,7 +15696,9 @@ function kg(n = {}, e = {}) {
       const t = e.evaluateFirewall(r.currentConfig, r.clientIp, r.country, r.finalOrigin);
       if (t) return t;
       const a = e.applyRateLimit(r.currentConfig, r.clientIp, r.requestTraits, r.startTime, r.finalOrigin);
-      return a || await e.tryServeMetadataCache(r);
+      if (a) return a;
+      const o = await e.tryServeItemsLatestCache(r);
+      return o || await e.tryServeMetadataCache(r);
     },
     shouldGuardClientDirectForRequest(r = {}, t = {}) {
       return String(t?.action || "").trim().toUpperCase() !== "DIRECT" || String(t?.reason || "").trim() === "stream_body_direct" ? !1 : r?.isBigStream === !0 || r?.isManifest === !0 || r?.isSegment === !0;
@@ -15638,7 +15840,7 @@ function kg(n = {}, e = {}) {
           } catch {
             T.set("Referer", L + "/");
           }
-        N && (A || (Vs(T), T.delete("Cookie")), p || T.delete("Origin"), g || T.delete("Referer")), O && i && (C && Vs(T), T.set("Connection", "keep-alive")), (s.isBigStream || s.isSmartStrmMedia || s.isManifest || s.isSegment) && s.rangeHeader && !T.has("Range") && T.set("Range", s.rangeHeader), (s.isBigStream || s.isSmartStrmMedia || s.isManifest || s.isSegment) && s.ifRangeHeader && !T.has("If-Range") && T.set("If-Range", s.ifRangeHeader), (D === "GET" || D === "HEAD") && T.delete("Content-Length");
+        N && (A || (Vs(T), T.delete("Cookie")), p || T.delete("Origin"), g || T.delete("Referer")), T.delete("X-Emby-Fixed-Chunk-Debug"), O && i && (C && Vs(T), T.set("Connection", "keep-alive")), (s.isBigStream || s.isSmartStrmMedia || s.isManifest || s.isSegment) && s.rangeHeader && !T.has("Range") && T.set("Range", s.rangeHeader), (s.isBigStream || s.isSmartStrmMedia || s.isManifest || s.isSegment) && s.ifRangeHeader && !T.has("If-Range") && T.set("If-Range", s.ifRangeHeader), (D === "GET" || D === "HEAD") && T.delete("Content-Length");
         const v = {
           method: D,
           headers: T,
@@ -16032,6 +16234,7 @@ function $g(n = {}, e = {}) {
       if (u.invalidResponse) return u.invalidResponse;
       const d = await e.resolveEarlyResponse(u);
       if (d) return d;
+      const executeRequest = async () => {
       let { targetRecords: f, invalidResponse: m } = e.parseTargetRecords(u.node, u.finalOrigin, { cachedTargetRecords: u.playbackRouteHotTargetRecords });
       if (m) return m;
       let p = e.prepareFailoverOverlay(u, f);
@@ -16056,6 +16259,9 @@ function $g(n = {}, e = {}) {
           const _sl = String((u.node && u.node.streamLine) || "").trim();
           let _sq = y.search;
           if (_sl && _sq) _sq = /([?&])line=[^&]*/i.test(_sq) ? _sq.replace(/([?&])line=[^&]*/i, "$1line=" + encodeURIComponent(_sl)) : _sq + "&line=" + encodeURIComponent(_sl);
+          e.recordAccessLog(u, e.buildDirectAccessLogPayload(u, 302, "", {
+            decisionReason: "playback_entry_direct"
+          }));
           return new Response(null, { status: 302, headers: { Location: _org + _lp + _sq, "Cache-Control": "no-store" } });
           }
           u.proxyPath = y.proxyPath, u.requestUrl = new URL(u.requestUrl.toString()), u.requestUrl.pathname = y.proxyPath, u.requestUrl.search = y.search, u.forceWorkerProxy = !0, u.infuseStreamRewrite = "playback_info";
@@ -16070,6 +16276,8 @@ function $g(n = {}, e = {}) {
       } catch (h) {
         return e.buildErrorResponse(u, h);
       }
+      };
+      return await e.runItemsLatestSingleFlight(u, executeRequest);
     }
   };
 }
@@ -16145,12 +16353,12 @@ function Kg(n = {}, e = {}) {
         const f = String(d || "").trim();
         f && c.push(`${u}=${f.length > 160 ? f.slice(0, 157) + "..." : f}`);
       };
-      return l("Flow", o.flow || "passthrough"), l("Kind", e.classifyProxyLogCategory(s)), l("Source", o.source || "upstream"), l("Range", s.rangeHeader || t?.request?.headers?.get("Range")), l("Content-Range", i?.get("Content-Range")), l("Length", i?.get("Content-Length")), l("Accept-Ranges", i?.get("Accept-Ranges")), l("Cache", o.cacheStatus || i?.get("CF-Cache-Status")), l("Upstream", o.upstreamHost || o.upstreamUrlHost), l("RoutingMode", Ur(t?.routingDecisionMode)), l("DirectAuth", t?.directRedirectAuthReason), o.protocolFallbackRetry === !0 && l("Retry", "protocol_fallback"), Number(o.idleTimeoutMs) > 0 && l("Idle", `${Number(o.idleTimeoutMs)}ms`), c.join(" | ");
+      return l("Flow", o.flow || "passthrough"), l("Kind", e.classifyProxyLogCategory(s)), l("Source", o.source || "upstream"), l("Range", s.rangeHeader || t?.request?.headers?.get("Range")), l("If-Range", s.ifRangeHeader || t?.request?.headers?.get("If-Range")), l("Auth", e.collectLogAuthKinds(t).join(",") || "none"), l("FixedChunk", t?.request?.headers?.get("X-Emby-Fixed-Chunk-Debug")), l("InfuseRouteCache", t?.infuseStreamRewriteCacheState), l("Content-Range", i?.get("Content-Range")), l("Length", i?.get("Content-Length")), l("Accept-Ranges", i?.get("Accept-Ranges")), l("Cache", o.cacheStatus || i?.get("CF-Cache-Status")), l("Upstream", o.upstreamHost || o.upstreamUrlHost), l("RoutingMode", Ur(t?.routingDecisionMode)), l("DirectAuth", t?.directRedirectAuthReason), o.protocolFallbackRetry === !0 && l("Retry", "protocol_fallback"), Number(o.idleTimeoutMs) > 0 && l("Idle", `${Number(o.idleTimeoutMs)}ms`), c.join(" | ");
     },
     buildPlaybackInfoCacheDiagnosticDetail(t) {
       if (t?.requestTraits?.isPlaybackInfoRequest !== !0) return "";
-      const a = zt(t?.effectivePlaybackInfoMode), o = String(t?.playbackInfoCacheState || "").trim(), s = String(t?.playbackInfoRewrite || "").trim(), i = [`PlaybackInfoMode=${a}`];
-      return s && i.push(`PlaybackInfoRewrite=${s}`), o && i.push(`PlaybackInfoCache=${o}`), Number(t?.playbackInfoCacheTtlSec) > 0 && i.push(`PlaybackInfoCacheTtl=${Number(t.playbackInfoCacheTtlSec)}s`), i.join(" | ");
+      const a = zt(t?.effectivePlaybackInfoMode), o = String(t?.playbackInfoCacheState || "").trim(), s = String(t?.playbackInfoRewrite || "").trim(), i = String(t?.infuseStreamRewriteCacheIndexState || "").trim(), c = [`PlaybackInfoMode=${a}`];
+      return s && c.push(`PlaybackInfoRewrite=${s}`), o && c.push(`PlaybackInfoCache=${o}`), Number(t?.playbackInfoCacheTtlSec) > 0 && c.push(`PlaybackInfoCacheTtl=${Number(t.playbackInfoCacheTtlSec)}s`), i && c.push(`InfuseRouteIndex=${i}`), c.join(" | ");
     },
     buildPlaybackUrlDiagnosticDetail(t) {
       const a = String(t?.playbackUrlMode || "").trim(), o = String(t?.playbackFallback || "").trim(), s = String(t?.playbackPathFix || "").trim(), i = String(t?.rewritePlaybackEntry || "").trim(), c = [];
@@ -17068,7 +17276,7 @@ function Vg(n = {}, e = {}) {
         direct307Mode: !1,
         enablePrewarm: p.enablePrewarm !== !1,
         isMetadataCacheable: m === "GET" && B.isWsUpgrade !== !0 && (B.isImage === !0 || B.isSubtitle === !0 || B.isManifest === !0)
-      } : B, ye = vm(p), xe = p.protocolFallback !== !1, je = ue(p.upstreamTimeoutMs, nd, 0, 18e4), at = ue(p.upstreamRetryAttempts, jn, 0, 3), It = p.hedgeFailoverEnabled === !0, Sr = p.hedgeProbePreferGet !== !1, bt = of(o, p), qt = ue(p.hedgeProbeTimeoutMs, No, 250, 1e4), _r = ue(p.hedgeProbeParallelism, wi, 1, 2), Mt = ue(p.hedgeWaitTimeoutMs, Li, 250, 1e4), Pt = ue(p.hedgeLockTtlMs, Di, 1e3, 1e4), br = ue(p.hedgePreferredTtlSec, sa, 30, 3600), ta = ue(p.hedgeFailureCooldownSec, Ni, 1, 300), Oe = ue(p.hedgeWakeJitterMs, Ii, 0, 1e3), xt = ue(p.cacheTtlImages, xi, 0, 365) * 86400, Ge = ye.enableH3 === !0, nt = ye.forceH1 === !0, Ot = p.playbackInfoCacheEnabled !== !1, Er = ue(p.playbackInfoCacheTtlSec, ld, 0, 60), He = p.videoProgressForwardEnabled !== !1, Et = ue(p.videoProgressForwardIntervalSec, Pi, 0, 60), vt = nf(o, p), Xt = rf(o, p), Ft = String(d.nodeCacheRevision || "").trim() || co(i, o), z = le.isMetadataCacheable ? await rl(a) : "", G = le.isMetadataCacheable ? al(x, {
+      } : B, ye = vm(p), xe = p.protocolFallback !== !1, je = ue(p.upstreamTimeoutMs, nd, 0, 18e4), at = ue(p.upstreamRetryAttempts, jn, 0, 3), It = p.hedgeFailoverEnabled === !0, Sr = p.hedgeProbePreferGet !== !1, bt = of(o, p), qt = ue(p.hedgeProbeTimeoutMs, No, 250, 1e4), _r = ue(p.hedgeProbeParallelism, wi, 1, 2), Mt = ue(p.hedgeWaitTimeoutMs, Li, 250, 1e4), Pt = ue(p.hedgeLockTtlMs, Di, 1e3, 1e4), br = ue(p.hedgePreferredTtlSec, sa, 30, 3600), ta = ue(p.hedgeFailureCooldownSec, Ni, 1, 300), Oe = ue(p.hedgeWakeJitterMs, Ii, 0, 1e3), xt = ue(p.cacheTtlImages, xi, 0, 365) * 86400, Ge = ye.enableH3 === !0, nt = ye.forceH1 === !0, Ot = p.playbackInfoCacheEnabled !== !1, Er = ue(p.playbackInfoCacheTtlSec, ld, 0, 60), He = p.videoProgressForwardEnabled !== !1, Et = ue(p.videoProgressForwardIntervalSec, Pi, 0, 60), vt = nf(o, p), Xt = rf(o, p), Ft = String(d.nodeCacheRevision || "").trim() || co(i, o), z = le.isMetadataCacheable || le.isItemsLatestRequest === !0 ? await rl(a) : "", G = le.isMetadataCacheable ? al(x, {
         imageCacheMaxAge: xt,
         prewarmCacheTtl: le.prewarmCacheTtl
       }) : "", q = le.isMetadataCacheable && lo(M) ? il(M, i, c, x, {
@@ -17077,7 +17285,15 @@ function Vg(n = {}, e = {}) {
         entryMode: d.entryMode,
         identityPartition: z,
         cachePolicyRevision: G
-      }) : null, J = q ? dr() : null, X = zd(o, p), ae = e.getRoutingDecision({
+      }) : null, J = q ? dr() : null, itemsLatestKey = le.isItemsLatestRequest === !0 ? await buildItemsLatestMicrocacheKey({
+        origin: M.origin,
+        nodeName: i,
+        nodeRevision: Ft,
+        proxyPath: x,
+        search: M.search,
+        identity: z,
+        corsOrigin: C
+      }) : null, itemsLatestCache = itemsLatestKey ? dr() : null, X = zd(o, p), ae = e.getRoutingDecision({
         phase: "entry",
         request: a,
         requestUrl: M,
@@ -17169,6 +17385,8 @@ function Vg(n = {}, e = {}) {
         metadataCache: J,
         metadataCacheIdentityPartition: z,
         metadataCachePolicyRevision: G,
+        itemsLatestCacheKey: itemsLatestKey,
+        itemsLatestCache,
         redirectTrace: null
       };
     },
@@ -17606,6 +17824,7 @@ function Jg(n = {}, e = {}) {
         isPlaybackStoppedRequest: A,
         isPlaybackStartedRequest: b,
         isPlaybackSessionControlRequest: R,
+        isItemsLatestRequest: c === "GET" && !y && /^\/(?:emby\/)?Users\/[^/]+\/Items\/Latest\/?$/i.test(a),
         isMetadataCacheable: c === "GET" && !y && !P && (d || m || p || T),
         isCacheableAsset: c === "GET" && !y && (d || f || m || g || p),
         nodeDirectMedia: O,
@@ -18463,6 +18682,7 @@ function th(n = {}, e = {}) {
       if ((!tr(a?.playbackInfoRepresentation) || a.playbackInfoRepresentation.response !== i) && (a = await r.guardPlaybackInfoResponseContract(t, a), !tr(a?.playbackInfoRepresentation)))
         return a;
       try {
+        await indexInfuseStreamRewriteRoutes(t, a.playbackInfoRepresentation.payload, a?.activeTargetBase || a?.finalUrl);
         const c = nu(a.playbackInfoRepresentation, {
           rewriteEnabled: o,
           preserveSourceTransport: Gt(t?.request),

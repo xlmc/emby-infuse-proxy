@@ -1,0 +1,13 @@
+__pycache__/
+*.py[cod]
+
+# Local Cloudflare source backups
+worker-backup-*.js
+worker-backup-*.json
+
+# Research-only candidates. Keep them locally, never include them in a release.
+media-range-cache-candidate.js
+worker-candidate-entry.js
+worker-second-hop-observer-entry.js
+tests/media-range-cache-candidate.test.mjs
+tests/second-hop-observer.test.mjs
